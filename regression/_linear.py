@@ -15,6 +15,13 @@ class LinearRegressor:
         if y.ndim != 1:
             y = y.ravel()
 
+        if X.size == 0 or y.size == 0:
+            raise ValueError("X and y must not be empty")
+        if X.shape[0] == 0:
+            raise ValueError("X must contain at least one sample")
+        if X.shape[0] != y.shape[0]:
+            raise ValueError("X and y must have the same number of samples")
+
         X_aug = np.c_[np.ones(X.shape[0]), X]
         theta = np.linalg.pinv(X_aug) @ y
 
@@ -27,6 +34,10 @@ class LinearRegressor:
 
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
+        if X.size == 0:
+            raise ValueError("X must not be empty")
+        if self.weights_ is None or self.bias_ is None:
+            raise ValueError("Model must be fitted before prediction")
 
         return X @ self.weights_ + self.bias_
 
@@ -47,6 +58,13 @@ class SGDRegression:
             raise ValueError("X must be a 2D array")
         if y.ndim != 1:
             y = y.ravel()
+
+        if X.size == 0 or y.size == 0:
+            raise ValueError("X and y must not be empty")
+        if X.shape[0] == 0:
+            raise ValueError("X must contain at least one sample")
+        if X.shape[0] != y.shape[0]:
+            raise ValueError("X and y must have the same number of samples")
 
         n_samples, n_features = X.shape
         self.weights_ = np.zeros(n_features, dtype=float)
@@ -78,5 +96,9 @@ class SGDRegression:
 
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
+        if X.size == 0:
+            raise ValueError("X must not be empty")
+        if self.weights_ is None or self.bias_ is None:
+            raise ValueError("Model must be fitted before prediction")
 
         return X @ self.weights_ + self.bias_
