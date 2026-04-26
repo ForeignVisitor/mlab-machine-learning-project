@@ -47,25 +47,3 @@ I added a few validation checks before training and prediction:
 - prediction is not allowed before fitting
 
 These checks help avoid common edge-case errors.
-
-## Usage example
-
-```python
-import numpy as np
-from mlab.regression._linear import LinearRegressor, SGDRegression
-
-X = np.array([,,, ], dtype=float)[2][3][4][5]
-y = np.array(, dtype=float)[4][6][7][8]
-
-model1 = LinearRegressor()
-model1.fit(X, y)
-print(model1.weights_)
-print(model1.bias_)
-print(model1.predict(X))
-
-model2 = SGDRegression(learning_rate=0.01, n_iterations=1000, batch_size=2)
-model2.fit(X, y)
-print(model2.weights_)
-print(model2.bias_)
-print(model2.predict(X))
-```
