@@ -33,6 +33,7 @@ class LogisticRegression:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
 
+        # Validate input shapes and basic assumptions.
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
         if y.ndim != 1:
@@ -51,11 +52,24 @@ class LogisticRegression:
         self.weights_ = np.zeros(n_features, dtype=float)
         self.bias_ = 0.0
 
+        # Compute class weights to reduce the effect of class imbalance.
+        count_0 = np.sum(y == 0)
+        count_1 = np.sum(y == 1)
+
+        if count_0 == 0 or count_1 == 0:
+            return self
+
+        weight_0 = n_samples / (2.0 * count_0)
+        weight_1 = n_samples / (2.0 * count_1)
+        sample_weights = np.where(y == 0, weight_0, weight_1)
+
+        # Run batch gradient descent for the requested number of iterations.
         for _ in range(self.n_iterations):
             linear_output = X @ self.weights_ + self.bias_
             predictions = self._sigmoid(linear_output)
 
-            errors = predictions - y
+            # Use weighted errors so minority-class samples matter more.
+            errors = (predictions - y) * sample_weights
             grad_w = (1.0 / n_samples) * (X.T @ errors)
             grad_b = (1.0 / n_samples) * np.sum(errors)
 
@@ -76,6 +90,7 @@ class LogisticRegression:
         """
         X = np.asarray(X, dtype=float)
 
+        # Prediction requires a fitted model and valid input data.
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
         if X.size == 0:
@@ -98,6 +113,7 @@ class LogisticRegression:
         Returns:
             numpy array of shape (n_samples,) with labels 0 or 1
         """
+        # Convert class-1 probabilities into hard labels with threshold 0.5.
         probabilities = self.predict_proba(X)[:, 1]
         return (probabilities >= 0.5).astype(int)
 
@@ -131,6 +147,7 @@ class SGDClassifier:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
 
+        # Validate input before training.
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
         if y.ndim != 1:
@@ -149,6 +166,17 @@ class SGDClassifier:
         self.weights_ = np.zeros(n_features, dtype=float)
         self.bias_ = 0.0
 
+        # Compute dataset-level class weights once before SGD.
+        count_0 = np.sum(y == 0)
+        count_1 = np.sum(y == 1)
+
+        if count_0 == 0 or count_1 == 0:
+            return self
+
+        weight_0 = n_samples / (2.0 * count_0)
+        weight_1 = n_samples / (2.0 * count_1)
+
+        # Shuffle the data every epoch and update with mini-batches.
         for _ in range(self.n_iterations):
             order = np.random.permutation(n_samples)
             X_epoch = X[order]
@@ -159,10 +187,13 @@ class SGDClassifier:
                 X_batch = X_epoch[start:stop]
                 y_batch = y_epoch[start:stop]
 
+                batch_weights = np.where(y_batch == 0, weight_0, weight_1)
+
                 linear_output = X_batch @ self.weights_ + self.bias_
                 predictions = self._sigmoid(linear_output)
 
-                errors = predictions - y_batch
+                # Compute weighted gradients for the current mini-batch.
+                errors = (predictions - y_batch) * batch_weights
                 grad_w = (1.0 / len(X_batch)) * (X_batch.T @ errors)
                 grad_b = (1.0 / len(X_batch)) * np.sum(errors)
 
@@ -183,6 +214,7 @@ class SGDClassifier:
         """
         X = np.asarray(X, dtype=float)
 
+        # Prediction is only valid after the model has been trained.
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
         if X.size == 0:
@@ -205,5 +237,6 @@ class SGDClassifier:
         Returns:
             numpy array of shape (n_samples,) with labels 0 or 1
         """
+        # Class 1 is predicted when the probability is at least 0.5.
         probabilities = self.predict_proba(X)[:, 1]
         return (probabilities >= 0.5).astype(int)
