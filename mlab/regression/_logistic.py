@@ -16,6 +16,7 @@ class LogisticRegression:
         self.n_iterations = n_iterations
         self.weights_ = None
         self.bias_ = None
+        self.single_class_ = None
 
     def _sigmoid(self, z):
         """Apply the sigmoid function element-wise."""
@@ -51,13 +52,18 @@ class LogisticRegression:
         n_samples, n_features = X.shape
         self.weights_ = np.zeros(n_features, dtype=float)
         self.bias_ = 0.0
+        self.single_class_ = None
+
+        unique_classes = np.unique(y)
+
+        # If the dataset has only one class, memorize it and skip normal training.
+        if unique_classes.size == 1:
+            self.single_class_ = int(unique_classes[0])
+            return self
 
         # Compute class weights to reduce the effect of class imbalance.
         count_0 = np.sum(y == 0)
         count_1 = np.sum(y == 1)
-
-        if count_0 == 0 or count_1 == 0:
-            return self
 
         weight_0 = n_samples / (2.0 * count_0)
         weight_1 = n_samples / (2.0 * count_1)
@@ -98,6 +104,12 @@ class LogisticRegression:
         if self.weights_ is None or self.bias_ is None:
             raise ValueError("Model must be fitted before prediction")
 
+        # For one-class training data, always return that memorized class.
+        if self.single_class_ is not None:
+            if self.single_class_ == 0:
+                return np.column_stack((np.ones(X.shape[0]), np.zeros(X.shape[0])))
+            return np.column_stack((np.zeros(X.shape[0]), np.ones(X.shape[0])))
+
         probabilities_class_1 = self._sigmoid(X @ self.weights_ + self.bias_)
         probabilities_class_0 = 1 - probabilities_class_1
 
@@ -113,6 +125,15 @@ class LogisticRegression:
         Returns:
             numpy array of shape (n_samples,) with labels 0 or 1
         """
+        # Return the memorized class directly for one-class training data.
+        if self.single_class_ is not None:
+            X = np.asarray(X, dtype=float)
+            if X.ndim != 2:
+                raise ValueError("X must be a 2D array")
+            if X.size == 0:
+                raise ValueError("X must not be empty")
+            return np.full(X.shape[0], self.single_class_, dtype=int)
+
         # Convert class-1 probabilities into hard labels with threshold 0.5.
         probabilities = self.predict_proba(X)[:, 1]
         return (probabilities >= 0.5).astype(int)
@@ -130,6 +151,7 @@ class SGDClassifier:
         self.batch_size = batch_size
         self.weights_ = None
         self.bias_ = None
+        self.single_class_ = None
 
     def _sigmoid(self, z):
         """Apply the sigmoid function element-wise."""
@@ -165,13 +187,18 @@ class SGDClassifier:
         n_samples, n_features = X.shape
         self.weights_ = np.zeros(n_features, dtype=float)
         self.bias_ = 0.0
+        self.single_class_ = None
+
+        unique_classes = np.unique(y)
+
+        # If the dataset has only one class, memorize it and skip normal training.
+        if unique_classes.size == 1:
+            self.single_class_ = int(unique_classes[0])
+            return self
 
         # Compute dataset-level class weights once before SGD.
         count_0 = np.sum(y == 0)
         count_1 = np.sum(y == 1)
-
-        if count_0 == 0 or count_1 == 0:
-            return self
 
         weight_0 = n_samples / (2.0 * count_0)
         weight_1 = n_samples / (2.0 * count_1)
@@ -222,6 +249,12 @@ class SGDClassifier:
         if self.weights_ is None or self.bias_ is None:
             raise ValueError("Model must be fitted before prediction")
 
+        # For one-class training data, always return that memorized class.
+        if self.single_class_ is not None:
+            if self.single_class_ == 0:
+                return np.column_stack((np.ones(X.shape[0]), np.zeros(X.shape[0])))
+            return np.column_stack((np.zeros(X.shape[0]), np.ones(X.shape[0])))
+
         probabilities_class_1 = self._sigmoid(X @ self.weights_ + self.bias_)
         probabilities_class_0 = 1 - probabilities_class_1
 
@@ -237,6 +270,15 @@ class SGDClassifier:
         Returns:
             numpy array of shape (n_samples,) with labels 0 or 1
         """
+        # Return the memorized class directly for one-class training data.
+        if self.single_class_ is not None:
+            X = np.asarray(X, dtype=float)
+            if X.ndim != 2:
+                raise ValueError("X must be a 2D array")
+            if X.size == 0:
+                raise ValueError("X must not be empty")
+            return np.full(X.shape[0], self.single_class_, dtype=int)
+
         # Class 1 is predicted when the probability is at least 0.5.
         probabilities = self.predict_proba(X)[:, 1]
         return (probabilities >= 0.5).astype(int)
