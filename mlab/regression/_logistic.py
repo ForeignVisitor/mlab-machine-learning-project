@@ -11,9 +11,10 @@ class LogisticRegression:
     Uses batch gradient descent to learn weights and bias.
     """
 
-    def __init__(self, learning_rate=0.01, n_iterations=1000):
+    def __init__(self, learning_rate=0.01, n_iterations=1000, reg_strength=0.01):
         self.learning_rate = learning_rate
         self.n_iterations = n_iterations
+        self.reg_strength = reg_strength
         self.weights_ = None
         self.bias_ = None
         self.single_class_ = None
@@ -76,7 +77,9 @@ class LogisticRegression:
 
             # Use weighted errors so minority-class samples matter more.
             errors = (predictions - y) * sample_weights
-            grad_w = (1.0 / n_samples) * (X.T @ errors)
+
+            # Add L2 regularization to the weight gradient, but not to the bias.
+            grad_w = (1.0 / n_samples) * (X.T @ errors) + (self.reg_strength / n_samples) * self.weights_
             grad_b = (1.0 / n_samples) * np.sum(errors)
 
             self.weights_ -= self.learning_rate * grad_w
@@ -145,10 +148,11 @@ class SGDClassifier:
     Uses mini-batches during training.
     """
 
-    def __init__(self, learning_rate=0.01, n_iterations=1000, batch_size=32):
+    def __init__(self, learning_rate=0.01, n_iterations=1000, batch_size=32, reg_strength=0.01):
         self.learning_rate = learning_rate
         self.n_iterations = n_iterations
         self.batch_size = batch_size
+        self.reg_strength = reg_strength
         self.weights_ = None
         self.bias_ = None
         self.single_class_ = None
@@ -221,7 +225,9 @@ class SGDClassifier:
 
                 # Compute weighted gradients for the current mini-batch.
                 errors = (predictions - y_batch) * batch_weights
-                grad_w = (1.0 / len(X_batch)) * (X_batch.T @ errors)
+
+                # Add L2 regularization to the weight gradient, but not to the bias.
+                grad_w = (1.0 / len(X_batch)) * (X_batch.T @ errors) + (self.reg_strength / n_samples) * self.weights_
                 grad_b = (1.0 / len(X_batch)) * np.sum(errors)
 
                 self.weights_ -= self.learning_rate * grad_w
