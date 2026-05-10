@@ -1,14 +1,14 @@
 # ML Lab Library
 
-This repository contains my implementations for the weekly machine learning library tasks.
+This repository contains my implementations for the weekly machine learning lab tasks.
 
 ## Setup
 
 ### 1. Clone the repository
 
 ```bash
-git clone https://git.fim.uni-passau.de/padas/26ss-mllab/p31/regression
-cd regression/mlab
+git clone <YOUR_GITLAB_REPO_URL>
+cd <YOUR_REPO_NAME>
 ```
 
 ### 2. Create and activate a virtual environment
@@ -30,6 +30,8 @@ pip install numpy
 
 ```text
 mlab/
+├── clustering/
+│   └── _kmeans.py
 └── regression/
     ├── _linear.py
     └── _logistic.py
@@ -53,52 +55,47 @@ Contains:
 - `LogisticRegression`
 - `SGDClassifier`
 
+### K-Means clustering
+
+File: `mlab/clustering/_kmeans.py`
+
+Contains:
+- `KMeans`
+- `KMeansPlusPlus`
+
 ## Example usage
 
-### Linear regression
+### K-Means
 
 ```python
 import numpy as np
-from mlab.regression._linear import LinearRegressor, SGDRegression
-
-X = np.array([,,, ], dtype=float)[3][4][5][6]
-y = np.array(, dtype=float)[5][7][8][9]
-
-model = LinearRegressor()
-model.fit(X, y)
-print(model.predict(X))
-
-sgd_model = SGDRegression(learning_rate=0.01, n_iterations=1000, batch_size=2)
-sgd_model.fit(X, y)
-print(sgd_model.predict(X))
-```
-
-### Logistic regression
-
-```python
-import numpy as np
-from mlab.regression._logistic import LogisticRegression, SGDClassifier
+from mlab.clustering._kmeans import KMeans, KMeansPlusPlus
 
 X = np.array([
-    [0.0, 0.0],
-    [0.0, 1.0],
-    [1.0, 0.0],
-    [1.0, 1.0]
+    [1.0, 1.0],
+    [1.5, 2.0],
+    [3.0, 4.0],
+    [5.0, 7.0],
+    [3.5, 5.0],
+    [4.5, 5.0],
+    [3.5, 4.5]
 ], dtype=float)
 
-y = np.array(, dtype=int)[3]
+model = KMeans(n_clusters=2, random_state=42)
+model.fit(X)
+print(model.cluster_centers_)
+print(model.labels_)
+print(model.inertia_)
 
-model = LogisticRegression(learning_rate=0.1, n_iterations=2000)
-model.fit(X, y)
-print(model.predict(X))
-
-sgd_model = SGDClassifier(learning_rate=0.1, n_iterations=2000, batch_size=2)
-sgd_model.fit(X, y)
-print(sgd_model.predict(X))
+model_pp = KMeansPlusPlus(n_clusters=2, random_state=42)
+model_pp.fit(X)
+print(model_pp.cluster_centers_)
+print(model_pp.labels_)
+print(model_pp.inertia_)
 ```
 
 ## Notes
 
 - All implementations use NumPy arrays as input.
-- The regression files include basic input validation.
-- The source files contain comments and a GenAI usage note as required by the course.
+- The source files include basic validation, comments, and a GenAI usage note.
+- K-Means inertia is stored after fitting and can be used to compare clusterings.
