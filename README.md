@@ -94,8 +94,19 @@ print(model_pp.labels_)
 print(model_pp.inertia_)
 ```
 
+
+### Naive Bayes
+
+File: `mlab/naive_bayes/_naive_bayes.py`
+
+Contains:
+- `GaussianNaiveBayes`
+- `MultinomialNaiveBayes`
+
+
 ## Notes
 
 - All implementations use NumPy arrays as input.
 - The source files include basic validation, comments, and a GenAI usage note.
 - K-Means inertia is stored after fitting and can be used to compare clusterings.
+
