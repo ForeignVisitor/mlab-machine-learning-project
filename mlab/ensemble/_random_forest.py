@@ -20,6 +20,7 @@ class RandomForest:
         n_trees=None,
         num_trees=None,
         min_samples_split=2,
+        min_samples_leaf=2,
         random_state=None
     ):
         if depth is not None:
@@ -32,6 +33,7 @@ class RandomForest:
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
         self.random_state = random_state
 
         self.trees_ = []
@@ -58,6 +60,11 @@ class RandomForest:
         if self.min_samples_split < 2:
             raise ValueError("min_samples_split must be at least 2")
 
+        if not isinstance(self.min_samples_leaf, (int, np.integer)):
+            raise ValueError("min_samples_leaf must be an integer")
+        if self.min_samples_leaf < 1:
+            raise ValueError("min_samples_leaf must be at least 1")
+
         if self.random_state is not None and not isinstance(
             self.random_state, (int, np.integer)
         ):
@@ -71,8 +78,6 @@ class RandomForest:
             raise ValueError("X must be a 2D array")
         if X.size == 0:
             raise ValueError("X must not be empty")
-        if not np.all(np.isfinite(X)):
-            raise ValueError("X must contain only finite values")
 
         if y is None:
             return X
@@ -87,13 +92,24 @@ class RandomForest:
 
         return X, y
 
+    def _balanced_bootstrap_indices(self, y, rng):
+        """Draw a more balanced bootstrap sample across classes."""
+        classes, counts = np.unique(y, return_counts=True)
+        max_count = np.max(counts)
+
+        sampled_indices = []
+        for class_label in classes:
+            class_indices = np.where(y == class_label)[0]
+            class_sample = rng.choice(class_indices, size=max_count, replace=True)
+            sampled_indices.append(class_sample)
+
+        sampled_indices = np.concatenate(sampled_indices)
+        rng.shuffle(sampled_indices)
+        return sampled_indices
+
     def fit(self, X, y):
         """
         Build the random forest from training data using bootstrap sampling.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-            y: numpy array of shape (n_samples,) with class labels
         """
         self._validate_params()
         X, y = self._validate_data(X, y)
@@ -110,18 +126,19 @@ class RandomForest:
         oob_counts = np.zeros(n_samples, dtype=int)
 
         for _ in range(self.n_estimators):
-            bootstrap_indices = rng.integers(0, n_samples, size=n_samples)
+            bootstrap_indices = self._balanced_bootstrap_indices(y, rng)
             X_bootstrap = X[bootstrap_indices]
             y_bootstrap = y[bootstrap_indices]
 
             in_bag = np.zeros(n_samples, dtype=bool)
-            in_bag[bootstrap_indices] = True
+            in_bag[np.unique(bootstrap_indices)] = True
             oob_indices = np.where(~in_bag)[0]
 
             tree_seed = int(rng.integers(0, 1_000_000_000))
             tree = DecisionTree(
                 max_depth=self.max_depth,
                 min_samples_split=self.min_samples_split,
+                min_samples_leaf=self.min_samples_leaf,
                 random_state=tree_seed,
                 max_features="sqrt"
             )
@@ -157,12 +174,6 @@ class RandomForest:
     def predict(self, X):
         """
         Predict class labels using majority voting across all trees.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples,) with predicted class labels
         """
         X = self._validate_data(X)
 

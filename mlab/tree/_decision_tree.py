@@ -30,6 +30,7 @@ class DecisionTree:
         self,
         max_depth=5,
         min_samples_split=2,
+        min_samples_leaf=2,
         depth=None,
         random_state=None,
         max_features=None
@@ -39,6 +40,7 @@ class DecisionTree:
 
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
         self.random_state = random_state
         self.max_features = max_features
 
@@ -51,6 +53,7 @@ class DecisionTree:
         self._rng = None
         self._n_features_in = None
         self._importance_sums = None
+        self._feature_means = None
 
     def _validate_params(self):
         """Validate constructor parameters."""
@@ -63,6 +66,11 @@ class DecisionTree:
             raise ValueError("min_samples_split must be an integer")
         if self.min_samples_split < 2:
             raise ValueError("min_samples_split must be at least 2")
+
+        if not isinstance(self.min_samples_leaf, (int, np.integer)):
+            raise ValueError("min_samples_leaf must be an integer")
+        if self.min_samples_leaf < 1:
+            raise ValueError("min_samples_leaf must be at least 1")
 
         if self.random_state is not None and not isinstance(
             self.random_state, (int, np.integer)
@@ -86,8 +94,6 @@ class DecisionTree:
             raise ValueError("X must be a 2D array")
         if X.size == 0:
             raise ValueError("X must not be empty")
-        if not np.all(np.isfinite(X)):
-            raise ValueError("X must contain only finite values")
 
         if y is None:
             return X
@@ -101,6 +107,20 @@ class DecisionTree:
             raise ValueError("X and y must have the same number of samples")
 
         return X, y
+
+    def _fit_imputer(self, X):
+        """Store feature means for missing-value imputation."""
+        feature_means = np.nanmean(X, axis=0)
+        feature_means = np.where(np.isnan(feature_means), 0.0, feature_means)
+        self._feature_means = feature_means
+
+    def _impute_missing(self, X):
+        """Replace NaN values with stored feature means."""
+        X = np.asarray(X, dtype=float).copy()
+        nan_mask = np.isnan(X)
+        if np.any(nan_mask):
+            X[nan_mask] = np.take(self._feature_means, np.where(nan_mask)[1])
+        return X
 
     def _gini(self, y):
         """Compute Gini impurity for a label vector."""
@@ -157,7 +177,10 @@ class DecisionTree:
                 left_mask = feature_values <= threshold
                 right_mask = ~left_mask
 
-                if not left_mask.any() or not right_mask.any():
+                left_count = np.sum(left_mask)
+                right_count = np.sum(right_mask)
+
+                if left_count < self.min_samples_leaf or right_count < self.min_samples_leaf:
                     continue
 
                 y_left = y[left_mask]
@@ -188,6 +211,8 @@ class DecisionTree:
             return node
         if y.size < self.min_samples_split:
             return node
+        if y.size < 2 * self.min_samples_leaf:
+            return node
         if np.unique(y).size == 1:
             return node
 
@@ -198,9 +223,6 @@ class DecisionTree:
 
         left_mask = X[:, feature_index] <= threshold
         right_mask = ~left_mask
-
-        if not left_mask.any() or not right_mask.any():
-            return node
 
         node.feature_index = feature_index
         node.threshold = threshold
@@ -246,13 +268,12 @@ class DecisionTree:
     def fit(self, X, y):
         """
         Build the decision tree from training data.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-            y: numpy array of shape (n_samples,) with class labels
         """
         self._validate_params()
         X, y = self._validate_data(X, y)
+
+        self._fit_imputer(X)
+        X = self._impute_missing(X)
 
         self._rng = np.random.default_rng(self.random_state)
         self._n_features_in = X.shape[1]
@@ -275,12 +296,6 @@ class DecisionTree:
     def predict(self, X):
         """
         Predict class labels for the given input.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples,) with predicted class labels
         """
         X = self._validate_data(X)
 
@@ -288,6 +303,8 @@ class DecisionTree:
             raise ValueError("Model must be fitted before prediction")
         if X.shape[1] != self._n_features_in:
             raise ValueError("X must have the same number of features as during fit")
+
+        X = self._impute_missing(X)
 
         predictions = [self._predict_one(sample, self._tree) for sample in X]
         return np.asarray(predictions)
