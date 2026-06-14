@@ -103,6 +103,15 @@ Contains:
 - `GaussianNaiveBayes`
 - `MultinomialNaiveBayes`
 
+### Trees & Ensembles
+
+Files:
+- `mlab/tree_ensemble/_decision_tree.py`
+- `mlab/tree_ensemble/_random_forest.py`
+
+Contains:
+- `DecisionTree`
+- `RandomForest`
 
 ## Notes
 
