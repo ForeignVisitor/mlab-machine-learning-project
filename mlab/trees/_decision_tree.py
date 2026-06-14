@@ -30,7 +30,7 @@ class DecisionTree:
         self,
         max_depth=5,
         min_samples_split=2,
-        min_samples_leaf=2,
+        min_samples_leaf=1,
         depth=None,
         random_state=None,
         max_features=None

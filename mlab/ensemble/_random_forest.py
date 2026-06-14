@@ -20,7 +20,7 @@ class RandomForest:
         n_trees=None,
         num_trees=None,
         min_samples_split=2,
-        min_samples_leaf=2,
+        min_samples_leaf=1,
         random_state=None
     ):
         if depth is not None:
