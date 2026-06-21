@@ -113,6 +113,16 @@ Contains:
 - `DecisionTree`
 - `RandomForest`
 
+### Support Vector Machines
+
+File:
+- `mlab/svm/_svm.py`
+
+Contains:
+- `SVC`
+- `SVM`
+- `SVR`
+
 ## Notes
 
 - All implementations use NumPy arrays as input.
