@@ -18,7 +18,7 @@ class ModularLinearLayer:
         self.grad_bias = np.zeros_like(self.bias)
 
     def __call__(self, X):
-        """Forward pass: X @ weight + bias."""
+        """Forward pass: X @ weight + bias"""
         X = np.asarray(X, dtype=np.float64)
         self._input = X
         return X @ self.weight + self.bias
@@ -27,9 +27,8 @@ class ModularLinearLayer:
         """Backward pass: compute gradients w.r.t. input, weight, and bias."""
         grad_output = np.asarray(grad_output, dtype=np.float64)
 
-        batch_size = max(1, self._input.shape[0])
-        self.grad_weight = (self._input.T @ grad_output) / batch_size
-        self.grad_bias = np.sum(grad_output, axis=0) / batch_size
+        self.grad_weight = self._input.T @ grad_output
+        self.grad_bias = np.sum(grad_output, axis=0)
         grad_input = grad_output @ self.weight.T
 
         return grad_input
@@ -47,14 +46,14 @@ class SigmoidLayer:
         self._output = None
 
     def __call__(self, X):
-        """Forward: 1 / (1 + exp(-X))."""
+        """Forward: 1 / (1 + exp(-X))"""
         X = np.asarray(X, dtype=np.float64)
         X = np.clip(X, -50.0, 50.0)
         self._output = 1.0 / (1.0 + np.exp(-X))
         return self._output
 
     def backward(self, grad_output):
-        """Backward: grad * sigmoid(X) * (1 - sigmoid(X))."""
+        """Backward: grad * sigmoid(X) * (1 - sigmoid(X))"""
         grad_output = np.asarray(grad_output, dtype=np.float64)
         return grad_output * self._output * (1.0 - self._output)
 
@@ -77,41 +76,22 @@ class TanhLayer:
 
 
 class ReLULayer:
-    """Leaky-ReLU style activation for safer gradient flow."""
+    """ReLU activation function."""
 
-    def __init__(self, negative_slope=0.01):
-        self.negative_slope = negative_slope
+    def __init__(self):
         self._input = None
 
     def __call__(self, X):
+        """Forward: max(0, X)"""
         X = np.asarray(X, dtype=np.float64)
         self._input = X
-        return np.where(X > 0.0, X, self.negative_slope * X)
+        return np.maximum(0.0, X)
 
     def backward(self, grad_output):
         grad_output = np.asarray(grad_output, dtype=np.float64)
-        slope = np.where(self._input > 0.0, 1.0, self.negative_slope)
-        return grad_output * slope
-
-
-class ELULayer:
-    """ELU activation function."""
-
-    def __init__(self, alpha=1.0):
-        self.alpha = alpha
-        self._input = None
-
-    def __call__(self, X):
-        X = np.asarray(X, dtype=np.float64)
-        X = np.clip(X, -50.0, 50.0)
-        self._input = X
-        return np.where(X > 0.0, X, self.alpha * (np.exp(X) - 1.0))
-
-    def backward(self, grad_output):
-        grad_output = np.asarray(grad_output, dtype=np.float64)
-        neg_grad = self.alpha * np.exp(np.clip(self._input, -50.0, 50.0))
-        local_grad = np.where(self._input > 0.0, 1.0, neg_grad)
-        return grad_output * local_grad
+        grad_input = grad_output.copy()
+        grad_input[self._input <= 0.0] = 0.0
+        return grad_input
 
 
 class SoftmaxLayer:
@@ -124,9 +104,9 @@ class SoftmaxLayer:
         X = np.asarray(X, dtype=np.float64)
         shifted = X - np.max(X, axis=1, keepdims=True)
         exp_values = np.exp(np.clip(shifted, -50.0, 50.0))
-        denom = np.sum(exp_values, axis=1, keepdims=True)
-        denom = np.clip(denom, 1e-12, None)
-        self._output = exp_values / denom
+        sums = np.sum(exp_values, axis=1, keepdims=True)
+        sums = np.clip(sums, 1e-12, None)
+        self._output = exp_values / sums
         return self._output
 
     def backward(self, grad_output):
@@ -136,115 +116,7 @@ class SoftmaxLayer:
         )
 
 
-class DropoutLayer:
-    """Dropout regularization layer."""
-
-    def __init__(self, dropout_rate=0.3, rng=None):
-        self.dropout_rate = float(dropout_rate)
-        self.training = True
-        self._mask = None
-        self._rng = rng
-
-    def __call__(self, X):
-        X = np.asarray(X, dtype=np.float64)
-
-        if not self.training or self.dropout_rate <= 0.0:
-            self._mask = np.ones_like(X, dtype=np.float64)
-            return X
-
-        keep_prob = 1.0 - self.dropout_rate
-        if self._rng is None:
-            random_values = np.random.rand(*X.shape)
-        else:
-            random_values = self._rng.random(X.shape)
-
-        self._mask = (random_values < keep_prob).astype(np.float64) / keep_prob
-        return X * self._mask
-
-    def backward(self, grad_output):
-        grad_output = np.asarray(grad_output, dtype=np.float64)
-        return grad_output * self._mask
-
-
-class BatchNormLayer:
-    """Batch normalization layer."""
-
-    def __init__(self, num_features, momentum=0.9, eps=1e-5):
-        self.num_features = int(num_features)
-        self.momentum = float(momentum)
-        self.eps = float(eps)
-
-        self.gamma = np.ones(self.num_features, dtype=np.float64)
-        self.beta = np.zeros(self.num_features, dtype=np.float64)
-
-        self.running_mean = np.zeros(self.num_features, dtype=np.float64)
-        self.running_var = np.ones(self.num_features, dtype=np.float64)
-
-        self.training = True
-
-        self._x_centered = None
-        self._std_inv = None
-        self._x_hat = None
-
-        self.grad_gamma = np.zeros(self.num_features, dtype=np.float64)
-        self.grad_beta = np.zeros(self.num_features, dtype=np.float64)
-
-    def __call__(self, X):
-        X = np.asarray(X, dtype=np.float64)
-
-        if self.training:
-            batch_mean = np.mean(X, axis=0)
-            batch_var = np.var(X, axis=0)
-
-            self._x_centered = X - batch_mean
-            self._std_inv = 1.0 / np.sqrt(batch_var + self.eps)
-            self._x_hat = self._x_centered * self._std_inv
-
-            self.running_mean = (
-                self.momentum * self.running_mean + (1.0 - self.momentum) * batch_mean
-            )
-            self.running_var = (
-                self.momentum * self.running_var + (1.0 - self.momentum) * batch_var
-            )
-
-            return self.gamma * self._x_hat + self.beta
-
-        x_hat = (X - self.running_mean) / np.sqrt(self.running_var + self.eps)
-        return self.gamma * x_hat + self.beta
-
-    def backward(self, grad_output):
-        grad_output = np.asarray(grad_output, dtype=np.float64)
-        batch_size = max(1, grad_output.shape[0])
-
-        self.grad_gamma = np.sum(grad_output * self._x_hat, axis=0) / batch_size
-        self.grad_beta = np.sum(grad_output, axis=0) / batch_size
-
-        dx_hat = grad_output * self.gamma
-        dvar = np.sum(
-            dx_hat * self._x_centered * -0.5 * (self._std_inv ** 3),
-            axis=0
-        )
-        dmean = (
-            np.sum(dx_hat * -self._std_inv, axis=0) +
-            dvar * np.mean(-2.0 * self._x_centered, axis=0)
-        )
-
-        dx = (
-            dx_hat * self._std_inv +
-            dvar * 2.0 * self._x_centered / batch_size +
-            dmean / batch_size
-        )
-
-        return dx
-
-    def update(self, learning_rate):
-        self.gamma -= learning_rate * self.grad_gamma
-        self.beta -= learning_rate * self.grad_beta
-
-
 class MLPRegressor:
-    """Multi-layer perceptron for regression using backpropagation."""
-
     def __init__(
         self,
         hidden_layer_sizes=(50, 30),
@@ -252,12 +124,10 @@ class MLPRegressor:
         epochs=100,
         random_state=None,
         alpha=0.0001,
-        activation="relu",
+        activation='relu',
         learning_rate=None,
         n_iterations=None,
-        max_iter=None,
-        dropout_rate=0.3,
-        batch_size=32
+        max_iter=None
     ):
         if learning_rate is not None:
             lr = learning_rate
@@ -272,40 +142,40 @@ class MLPRegressor:
         self.random_state = random_state
         self.alpha = alpha
         self.activation = activation
-        self.dropout_rate = dropout_rate
-        self.batch_size = batch_size
 
         self.layers_ = []
         self.layers = self.layers_
         self._layers = self.layers_
         self.network = self.layers_
 
-        self._rng = None
-        self._input_size = None
-        self._output_size = None
-        self._feature_means = None
-
         self.validation_fraction = 0.2
         self.early_stopping = True
-        self.patience = 12
+        self.patience = 20
         self.tol = 1e-6
-        self.gradient_clip_value = 3.0
+        self.batch_size = 32
+        self.gradient_clip_value = 5.0
         self.lr_decay = 0.995
 
         self.loss_curve_ = []
         self.validation_scores_ = []
 
+        self._rng = None
+        self._input_size = None
+        self._output_size = None
+        self._feature_means = None
+
     def _validate_params(self):
         if isinstance(self.hidden_layer_sizes, int):
             self.hidden_layer_sizes = (self.hidden_layer_sizes,)
+        elif isinstance(self.hidden_layer_sizes, list):
+            self.hidden_layer_sizes = tuple(self.hidden_layer_sizes)
 
         if not isinstance(self.hidden_layer_sizes, tuple):
-            raise ValueError("hidden_layer_sizes must be a tuple or int")
-        if any(
-            (not isinstance(size, (int, np.integer)) or size <= 0)
-            for size in self.hidden_layer_sizes
-        ):
-            raise ValueError("All hidden layer sizes must be positive integers")
+            raise ValueError("hidden_layer_sizes must be a tuple, list, or int")
+
+        for size in self.hidden_layer_sizes:
+            if not isinstance(size, (int, np.integer)) or size <= 0:
+                raise ValueError("All hidden layer sizes must be positive integers")
 
         if not isinstance(self.lr, (int, float, np.integer, np.floating)):
             raise ValueError("lr must be numeric")
@@ -322,18 +192,8 @@ class MLPRegressor:
         if self.alpha < 0:
             raise ValueError("alpha must be non-negative")
 
-        if self.activation not in ("relu", "sigmoid", "tanh", "elu"):
-            raise ValueError("activation must be 'relu', 'sigmoid', 'tanh', or 'elu'")
-
-        if not isinstance(self.dropout_rate, (int, float, np.integer, np.floating)):
-            raise ValueError("dropout_rate must be numeric")
-        if not 0.0 <= self.dropout_rate < 1.0:
-            raise ValueError("dropout_rate must be in [0, 1)")
-
-        if not isinstance(self.batch_size, (int, np.integer)):
-            raise ValueError("batch_size must be an integer")
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive")
+        if self.activation not in ("relu", "sigmoid", "tanh"):
+            raise ValueError("activation must be 'relu', 'sigmoid', or 'tanh'")
 
         if self.random_state is not None and not isinstance(
             self.random_state, (int, np.integer)
@@ -384,33 +244,32 @@ class MLPRegressor:
 
     def _get_activation_layer(self):
         if self.activation == "relu":
-            return ReLULayer(negative_slope=0.01)
+            return ReLULayer()
         if self.activation == "sigmoid":
             return SigmoidLayer()
-        if self.activation == "tanh":
-            return TanhLayer()
-        return ELULayer(alpha=1.0)
+        return TanhLayer()
 
     def _he_initialize(self, input_size, output_size):
-        std = np.sqrt(2.0 / input_size)
+        std = np.sqrt(2.0 / max(1, input_size))
         return self._rng.normal(
-            loc=0.0,
-            scale=std,
-            size=(input_size, output_size)
+            0.0, std, size=(input_size, output_size)
         ).astype(np.float64)
 
     def _xavier_initialize(self, input_size, output_size):
-        limit = np.sqrt(6.0 / (input_size + output_size))
+        limit = np.sqrt(6.0 / max(1, input_size + output_size))
         return self._rng.uniform(
-            low=-limit,
-            high=limit,
-            size=(input_size, output_size)
+            -limit, limit, size=(input_size, output_size)
         ).astype(np.float64)
 
-    def _initialize_linear_layer(self, input_size, output_size):
+    def _initialize_linear_layer(self, input_size, output_size, is_output=False):
         layer = ModularLinearLayer(input_size, output_size)
 
-        if self.activation in ("relu", "elu"):
+        if is_output:
+            layer.weight = self._xavier_initialize(input_size, output_size)
+            layer.bias = np.zeros(output_size, dtype=np.float64)
+            return layer
+
+        if self.activation == "relu":
             layer.weight = self._he_initialize(input_size, output_size)
             layer.bias = np.full(output_size, 0.01, dtype=np.float64)
         else:
@@ -428,21 +287,15 @@ class MLPRegressor:
         previous_size = input_size
 
         for hidden_size in self.hidden_layer_sizes:
-            self.layers_.append(self._initialize_linear_layer(previous_size, hidden_size))
-            self.layers_.append(BatchNormLayer(hidden_size))
+            linear = self._initialize_linear_layer(previous_size, hidden_size)
+            self.layers_.append(linear)
             self.layers_.append(self._get_activation_layer())
-            self.layers_.append(DropoutLayer(self.dropout_rate, rng=self._rng))
             previous_size = hidden_size
 
-        output_layer = ModularLinearLayer(previous_size, output_size)
-        output_layer.weight = self._xavier_initialize(previous_size, output_size)
-        output_layer.bias = np.zeros(output_size, dtype=np.float64)
+        output_layer = self._initialize_linear_layer(
+            previous_size, output_size, is_output=True
+        )
         self.layers_.append(output_layer)
-
-    def _set_training_mode(self, training):
-        for layer in self.layers_:
-            if isinstance(layer, (DropoutLayer, BatchNormLayer)):
-                layer.training = training
 
     def _forward(self, X):
         output = X
@@ -455,13 +308,13 @@ class MLPRegressor:
         for layer in reversed(self.layers_):
             grad = layer.backward(grad)
 
-    def _apply_regularization(self, n_samples):
+    def _apply_regularization(self, batch_size):
         if self.alpha == 0:
             return
 
         for layer in self.layers_:
             if isinstance(layer, ModularLinearLayer):
-                layer.grad_weight += (self.alpha / max(1, n_samples)) * layer.weight
+                layer.grad_weight += (self.alpha / max(1, batch_size)) * layer.weight
 
     def _clip_gradients(self):
         for layer in self.layers_:
@@ -476,36 +329,25 @@ class MLPRegressor:
                     -self.gradient_clip_value,
                     self.gradient_clip_value
                 )
-            if isinstance(layer, BatchNormLayer):
-                layer.grad_gamma = np.clip(
-                    layer.grad_gamma,
-                    -self.gradient_clip_value,
-                    self.gradient_clip_value
-                )
-                layer.grad_beta = np.clip(
-                    layer.grad_beta,
-                    -self.gradient_clip_value,
-                    self.gradient_clip_value
-                )
 
     def _update(self, learning_rate):
         for layer in self.layers_:
-            if hasattr(layer, "update"):
+            if isinstance(layer, ModularLinearLayer):
                 layer.update(learning_rate)
 
     def _compute_loss(self, y_true, y_pred):
-        error = y_pred - y_true
-        mse = np.mean(error ** 2)
+        mse = np.mean((y_pred - y_true) ** 2)
 
         l2_penalty = 0.0
         for layer in self.layers_:
             if isinstance(layer, ModularLinearLayer):
                 l2_penalty += np.sum(layer.weight ** 2)
 
-        return float(mse + self.alpha * l2_penalty / max(1, y_true.shape[0]))
+        return float(mse + 0.5 * self.alpha * l2_penalty / max(1, y_true.shape[0]))
 
     def _split_validation_data(self, X, y):
         n_samples = X.shape[0]
+
         if n_samples < 5:
             return X, y, None, None
 
@@ -521,9 +363,6 @@ class MLPRegressor:
 
         return X[train_indices], y[train_indices], X[val_indices], y[val_indices]
 
-    def _capture_best_state(self):
-        return [copy.deepcopy(layer) for layer in self.layers_]
-
     def _iterate_minibatches(self, X, y):
         n_samples = X.shape[0]
         indices = np.arange(n_samples)
@@ -532,6 +371,9 @@ class MLPRegressor:
         for start in range(0, n_samples, self.batch_size):
             batch_idx = indices[start:start + self.batch_size]
             yield X[batch_idx], y[batch_idx]
+
+    def _capture_best_state(self):
+        return [copy.deepcopy(layer) for layer in self.layers_]
 
     def fit(self, X, y):
         """
@@ -569,12 +411,9 @@ class MLPRegressor:
         self.validation_scores_ = []
 
         for _ in range(self.epochs):
-            self._set_training_mode(True)
-
             for X_batch, y_batch in self._iterate_minibatches(X_train, y_train):
                 predictions = self._forward(X_batch)
-                normalizer = max(1, y_batch.size)
-                grad_output = (2.0 / normalizer) * (predictions - y_batch)
+                grad_output = (2.0 / max(1, X_batch.shape[0])) * (predictions - y_batch)
 
                 self._backward(grad_output)
                 self._apply_regularization(X_batch.shape[0])
@@ -582,8 +421,6 @@ class MLPRegressor:
                 self._update(current_lr)
 
             current_lr = max(current_lr * self.lr_decay, 1e-5)
-
-            self._set_training_mode(False)
 
             train_pred = self._forward(X_train)
             train_loss = self._compute_loss(y_train, train_pred)
@@ -629,7 +466,6 @@ class MLPRegressor:
             raise ValueError("X must have the same number of features as during fit")
 
         X = self._impute_missing(X)
-        self._set_training_mode(False)
         predictions = self._forward(X)
 
         if predictions.shape[1] == 1:
