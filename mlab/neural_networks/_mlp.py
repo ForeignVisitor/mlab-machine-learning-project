@@ -24,7 +24,7 @@ class ModularLinearLayer:
         return X @ self.weight + self.bias
 
     def backward(self, grad_output):
-        """Backward pass: compute gradients for input, weight, and bias."""
+        """Backward pass: compute gradients w.r.t. input, weight, and bias."""
         grad_output = np.asarray(grad_output, dtype=np.float64)
 
         self.grad_weight = self._input.T @ grad_output
@@ -34,7 +34,7 @@ class ModularLinearLayer:
         return grad_input
 
     def update(self, learning_rate):
-        """Update weights and biases using stored gradients."""
+        """Update weights and biases using computed gradients."""
         self.weight -= learning_rate * self.grad_weight
         self.bias -= learning_rate * self.grad_bias
 
@@ -93,6 +93,29 @@ class ReLULayer:
         return grad_output * slope
 
 
+class ELULayer:
+    """ELU activation function."""
+
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
+        self._input = None
+
+    def __call__(self, X):
+        X = np.asarray(X, dtype=np.float64)
+        X = np.clip(X, -50.0, 50.0)
+        self._input = X
+        return np.where(X > 0.0, X, self.alpha * (np.exp(X) - 1.0))
+
+    def backward(self, grad_output):
+        grad_output = np.asarray(grad_output, dtype=np.float64)
+        grad = np.where(
+            self._input > 0.0,
+            1.0,
+            self.alpha * np.exp(np.clip(self._input, -50.0, 50.0))
+        )
+        return grad_output * grad
+
+
 class SoftmaxLayer:
     """Softmax activation (for multi-class output)."""
 
@@ -115,6 +138,36 @@ class SoftmaxLayer:
         )
 
 
+class DropoutLayer:
+    """Dropout regularization layer."""
+
+    def __init__(self, dropout_rate=0.2, rng=None):
+        self.dropout_rate = dropout_rate
+        self.training = True
+        self._mask = None
+        self._rng = rng
+
+    def __call__(self, X):
+        X = np.asarray(X, dtype=np.float64)
+
+        if not self.training or self.dropout_rate <= 0.0:
+            self._mask = np.ones_like(X, dtype=np.float64)
+            return X
+
+        keep_prob = 1.0 - self.dropout_rate
+        if self._rng is None:
+            random_values = np.random.rand(*X.shape)
+        else:
+            random_values = self._rng.random(X.shape)
+
+        self._mask = (random_values < keep_prob).astype(np.float64) / keep_prob
+        return X * self._mask
+
+    def backward(self, grad_output):
+        grad_output = np.asarray(grad_output, dtype=np.float64)
+        return grad_output * self._mask
+
+
 class MLPRegressor:
     """Multi-layer perceptron for regression using backpropagation."""
 
@@ -128,7 +181,8 @@ class MLPRegressor:
         activation="relu",
         learning_rate=None,
         n_iterations=None,
-        max_iter=None
+        max_iter=None,
+        dropout_rate=0.2
     ):
         if learning_rate is not None:
             lr = learning_rate
@@ -143,9 +197,11 @@ class MLPRegressor:
         self.random_state = random_state
         self.alpha = alpha
         self.activation = activation
+        self.dropout_rate = dropout_rate
 
         self.layers_ = []
         self.layers = self.layers_
+        self._layers = self.layers_
         self.network = self.layers_
 
         self._rng = None
@@ -189,8 +245,13 @@ class MLPRegressor:
         if self.alpha < 0:
             raise ValueError("alpha must be non-negative")
 
-        if self.activation not in ("relu", "sigmoid", "tanh"):
-            raise ValueError("activation must be 'relu', 'sigmoid', or 'tanh'")
+        if self.activation not in ("relu", "sigmoid", "tanh", "elu"):
+            raise ValueError("activation must be 'relu', 'sigmoid', 'tanh', or 'elu'")
+
+        if not isinstance(self.dropout_rate, (int, float, np.integer, np.floating)):
+            raise ValueError("dropout_rate must be numeric")
+        if not 0.0 <= self.dropout_rate < 1.0:
+            raise ValueError("dropout_rate must be in [0, 1)")
 
         if self.random_state is not None and not isinstance(
             self.random_state, (int, np.integer)
@@ -249,23 +310,34 @@ class MLPRegressor:
             return ReLULayer(negative_slope=0.01)
         if self.activation == "sigmoid":
             return SigmoidLayer()
-        return TanhLayer()
+        if self.activation == "tanh":
+            return TanhLayer()
+        return ELULayer(alpha=1.0)
+
+    def _he_initialize(self, input_size, output_size):
+        """He initialization for ReLU-like activations."""
+        std = np.sqrt(2.0 / input_size)
+        return self._rng.normal(
+            0.0, std, size=(input_size, output_size)
+        ).astype(np.float64)
+
+    def _xavier_initialize(self, input_size, output_size):
+        """Xavier/Glorot initialization for sigmoid/tanh-style activations."""
+        limit = np.sqrt(6.0 / (input_size + output_size))
+        return self._rng.uniform(
+            -limit, limit, size=(input_size, output_size)
+        ).astype(np.float64)
 
     def _initialize_linear_layer(self, input_size, output_size):
         """Create and initialize one dense layer."""
         layer = ModularLinearLayer(input_size, output_size)
 
-        if self.activation == "relu":
-            scale = np.sqrt(2.0 / input_size)
+        if self.activation in ("relu", "elu"):
+            layer.weight = self._he_initialize(input_size, output_size)
+            layer.bias = np.full(output_size, 0.01, dtype=np.float64)
         else:
-            scale = np.sqrt(1.0 / input_size)
-
-        layer.weight = self._rng.normal(
-            loc=0.0,
-            scale=scale,
-            size=(input_size, output_size)
-        ).astype(np.float64)
-        layer.bias = np.zeros(output_size, dtype=np.float64)
+            layer.weight = self._xavier_initialize(input_size, output_size)
+            layer.bias = np.zeros(output_size, dtype=np.float64)
 
         return layer
 
@@ -273,6 +345,7 @@ class MLPRegressor:
         """Build the sequence of layers."""
         self.layers_ = []
         self.layers = self.layers_
+        self._layers = self.layers_
         self.network = self.layers_
 
         previous_size = input_size
@@ -281,17 +354,19 @@ class MLPRegressor:
             linear = self._initialize_linear_layer(previous_size, hidden_size)
             self.layers_.append(linear)
             self.layers_.append(self._get_activation_layer())
+            self.layers_.append(DropoutLayer(self.dropout_rate, rng=self._rng))
             previous_size = hidden_size
 
         output_layer = ModularLinearLayer(previous_size, output_size)
-        output_scale = np.sqrt(1.0 / max(1, previous_size))
-        output_layer.weight = self._rng.normal(
-            loc=0.0,
-            scale=output_scale,
-            size=(previous_size, output_size)
-        ).astype(np.float64)
+        output_layer.weight = self._xavier_initialize(previous_size, output_size)
         output_layer.bias = np.zeros(output_size, dtype=np.float64)
         self.layers_.append(output_layer)
+
+    def _set_training_mode(self, training):
+        """Enable or disable training mode for layers like dropout."""
+        for layer in self.layers_:
+            if isinstance(layer, DropoutLayer):
+                layer.training = training
 
     def _forward(self, X):
         """Run a forward pass through the network."""
@@ -333,7 +408,7 @@ class MLPRegressor:
     def _update(self):
         """Update all linear layers."""
         for layer in self.layers_:
-            if hasattr(layer, "update"):
+            if isinstance(layer, ModularLinearLayer):
                 layer.update(self.lr)
 
     def _compute_loss(self, y_true, y_pred):
@@ -368,10 +443,7 @@ class MLPRegressor:
 
     def _capture_best_state(self):
         """Capture the current network state."""
-        saved_layers = []
-        for layer in self.layers_:
-            saved_layers.append(copy.deepcopy(layer))
-        return saved_layers
+        return [copy.deepcopy(layer) for layer in self.layers_]
 
     def fit(self, X, y):
         """
@@ -397,7 +469,6 @@ class MLPRegressor:
         self._output_size = y.shape[1]
 
         X_train, y_train, X_val, y_val = self._split_validation_data(X, y)
-
         self._build_network(self._input_size, self._output_size)
 
         n_samples = X_train.shape[0]
@@ -411,14 +482,16 @@ class MLPRegressor:
         self.validation_scores_ = []
 
         for _ in range(self.epochs):
+            self._set_training_mode(True)
             predictions = self._forward(X_train)
-            grad_output = (2.0 / max(1, normalizer)) * (predictions - y_train)
 
+            grad_output = (2.0 / max(1, normalizer)) * (predictions - y_train)
             self._backward(grad_output)
             self._apply_regularization(n_samples)
             self._clip_gradients()
             self._update()
 
+            self._set_training_mode(False)
             train_pred = self._forward(X_train)
             train_loss = self._compute_loss(y_train, train_pred)
             self.loss_curve_.append(train_loss)
@@ -439,6 +512,7 @@ class MLPRegressor:
                     if best_state is not None:
                         self.layers_ = best_state
                         self.layers = self.layers_
+                        self._layers = self.layers_
                         self.network = self.layers_
                     break
 
@@ -462,6 +536,7 @@ class MLPRegressor:
             raise ValueError("X must have the same number of features as during fit")
 
         X = self._impute_missing(X)
+        self._set_training_mode(False)
         predictions = self._forward(X)
 
         if predictions.shape[1] == 1:
