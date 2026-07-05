@@ -123,6 +123,19 @@ Contains:
 - `SVM`
 - `SVR`
 
+### Multi-Layer Perceptron
+
+File:
+- `mlab/neural_networks/_mlp.py`
+
+Contains:
+- `ModularLinearLayer`
+- `SigmoidLayer`
+- `TanhLayer`
+- `ReLULayer`
+- `SoftmaxLayer`
+- `MLPRegressor`
+
 ## Notes
 
 - All implementations use NumPy arrays as input.
