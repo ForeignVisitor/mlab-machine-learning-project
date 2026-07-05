@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 
 # GenAI usage note:
@@ -9,8 +10,8 @@ class ModularLinearLayer:
     """Fully connected (dense) layer."""
 
     def __init__(self, input_size, output_size):
-        self.weight = np.zeros((input_size, output_size), dtype=float)
-        self.bias = np.zeros(output_size, dtype=float)
+        self.weight = np.zeros((input_size, output_size), dtype=np.float64)
+        self.bias = np.zeros(output_size, dtype=np.float64)
 
         self._input = None
         self.grad_weight = np.zeros_like(self.weight)
@@ -18,13 +19,13 @@ class ModularLinearLayer:
 
     def __call__(self, X):
         """Forward pass: X @ weight + bias."""
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float64)
         self._input = X
         return X @ self.weight + self.bias
 
     def backward(self, grad_output):
         """Backward pass: compute gradients for input, weight, and bias."""
-        grad_output = np.asarray(grad_output, dtype=float)
+        grad_output = np.asarray(grad_output, dtype=np.float64)
 
         self.grad_weight = self._input.T @ grad_output
         self.grad_bias = np.sum(grad_output, axis=0)
@@ -46,14 +47,14 @@ class SigmoidLayer:
 
     def __call__(self, X):
         """Forward: 1 / (1 + exp(-X))."""
-        X = np.asarray(X, dtype=float)
-        X = np.clip(X, -500.0, 500.0)
+        X = np.asarray(X, dtype=np.float64)
+        X = np.clip(X, -50.0, 50.0)
         self._output = 1.0 / (1.0 + np.exp(-X))
         return self._output
 
     def backward(self, grad_output):
         """Backward: grad * sigmoid(X) * (1 - sigmoid(X))."""
-        grad_output = np.asarray(grad_output, dtype=float)
+        grad_output = np.asarray(grad_output, dtype=np.float64)
         return grad_output * self._output * (1.0 - self._output)
 
 
@@ -64,35 +65,32 @@ class TanhLayer:
         self._output = None
 
     def __call__(self, X):
-        """Forward pass for tanh."""
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float64)
+        X = np.clip(X, -50.0, 50.0)
         self._output = np.tanh(X)
         return self._output
 
     def backward(self, grad_output):
-        """Backward pass for tanh."""
-        grad_output = np.asarray(grad_output, dtype=float)
+        grad_output = np.asarray(grad_output, dtype=np.float64)
         return grad_output * (1.0 - self._output ** 2)
 
 
 class ReLULayer:
-    """ReLU activation function."""
+    """Leaky-ReLU style activation for safer gradient flow."""
 
-    def __init__(self):
+    def __init__(self, negative_slope=0.01):
+        self.negative_slope = negative_slope
         self._input = None
 
     def __call__(self, X):
-        """Forward: max(0, X)."""
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float64)
         self._input = X
-        return np.maximum(0.0, X)
+        return np.where(X > 0.0, X, self.negative_slope * X)
 
     def backward(self, grad_output):
-        """Backward pass for ReLU."""
-        grad_output = np.asarray(grad_output, dtype=float)
-        grad_input = grad_output.copy()
-        grad_input[self._input <= 0.0] = 0.0
-        return grad_input
+        grad_output = np.asarray(grad_output, dtype=np.float64)
+        slope = np.where(self._input > 0.0, 1.0, self.negative_slope)
+        return grad_output * slope
 
 
 class SoftmaxLayer:
@@ -102,16 +100,16 @@ class SoftmaxLayer:
         self._output = None
 
     def __call__(self, X):
-        """Forward pass for softmax."""
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float64)
         shifted = X - np.max(X, axis=1, keepdims=True)
-        exp_values = np.exp(shifted)
-        self._output = exp_values / np.sum(exp_values, axis=1, keepdims=True)
+        exp_values = np.exp(np.clip(shifted, -50.0, 50.0))
+        denom = np.sum(exp_values, axis=1, keepdims=True)
+        denom = np.clip(denom, 1e-12, None)
+        self._output = exp_values / denom
         return self._output
 
     def backward(self, grad_output):
-        """Backward pass for softmax."""
-        grad_output = np.asarray(grad_output, dtype=float)
+        grad_output = np.asarray(grad_output, dtype=np.float64)
         return self._output * (
             grad_output - np.sum(grad_output * self._output, axis=1, keepdims=True)
         )
@@ -155,6 +153,14 @@ class MLPRegressor:
         self._output_size = None
         self._feature_means = None
 
+        self.validation_fraction = 0.2
+        self.early_stopping = True
+        self.patience = 20
+        self.tol = 1e-6
+        self.gradient_clip_value = 5.0
+        self.loss_curve_ = []
+        self.validation_scores_ = []
+
     def _validate_params(self):
         """Validate constructor parameters."""
         if isinstance(self.hidden_layer_sizes, int):
@@ -193,7 +199,7 @@ class MLPRegressor:
 
     def _validate_X(self, X):
         """Validate input features."""
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
@@ -207,7 +213,7 @@ class MLPRegressor:
     def _validate_X_y(self, X, y):
         """Validate features and targets."""
         X = self._validate_X(X)
-        y = np.asarray(y, dtype=float)
+        y = np.asarray(y, dtype=np.float64)
 
         if y.ndim == 1:
             y = y.reshape(-1, 1)
@@ -231,7 +237,7 @@ class MLPRegressor:
 
     def _impute_missing(self, X):
         """Replace NaN values with stored feature means."""
-        X = np.asarray(X, dtype=float).copy()
+        X = np.asarray(X, dtype=np.float64).copy()
         nan_mask = np.isnan(X)
         if np.any(nan_mask):
             X[nan_mask] = np.take(self._feature_means, np.where(nan_mask)[1])
@@ -240,7 +246,7 @@ class MLPRegressor:
     def _get_activation_layer(self):
         """Create the configured hidden activation layer."""
         if self.activation == "relu":
-            return ReLULayer()
+            return ReLULayer(negative_slope=0.01)
         if self.activation == "sigmoid":
             return SigmoidLayer()
         return TanhLayer()
@@ -258,8 +264,8 @@ class MLPRegressor:
             loc=0.0,
             scale=scale,
             size=(input_size, output_size)
-        )
-        layer.bias = np.zeros(output_size, dtype=float)
+        ).astype(np.float64)
+        layer.bias = np.zeros(output_size, dtype=np.float64)
 
         return layer
 
@@ -283,8 +289,8 @@ class MLPRegressor:
             loc=0.0,
             scale=output_scale,
             size=(previous_size, output_size)
-        )
-        output_layer.bias = np.zeros(output_size, dtype=float)
+        ).astype(np.float64)
+        output_layer.bias = np.zeros(output_size, dtype=np.float64)
         self.layers_.append(output_layer)
 
     def _forward(self, X):
@@ -309,11 +315,63 @@ class MLPRegressor:
             if isinstance(layer, ModularLinearLayer):
                 layer.grad_weight += (self.alpha / n_samples) * layer.weight
 
+    def _clip_gradients(self):
+        """Clip gradients for stability."""
+        for layer in self.layers_:
+            if isinstance(layer, ModularLinearLayer):
+                layer.grad_weight = np.clip(
+                    layer.grad_weight,
+                    -self.gradient_clip_value,
+                    self.gradient_clip_value
+                )
+                layer.grad_bias = np.clip(
+                    layer.grad_bias,
+                    -self.gradient_clip_value,
+                    self.gradient_clip_value
+                )
+
     def _update(self):
         """Update all linear layers."""
         for layer in self.layers_:
             if hasattr(layer, "update"):
                 layer.update(self.lr)
+
+    def _compute_loss(self, y_true, y_pred):
+        """Compute regularized mean squared error."""
+        error = y_pred - y_true
+        mse = np.mean(error ** 2)
+
+        l2_penalty = 0.0
+        for layer in self.layers_:
+            if isinstance(layer, ModularLinearLayer):
+                l2_penalty += np.sum(layer.weight ** 2)
+
+        return float(mse + self.alpha * l2_penalty / max(1, y_true.shape[0]))
+
+    def _split_validation_data(self, X, y):
+        """Split into train and validation sets."""
+        n_samples = X.shape[0]
+        if n_samples < 5:
+            return X, y, None, None
+
+        indices = np.arange(n_samples)
+        self._rng.shuffle(indices)
+
+        val_size = max(1, int(self.validation_fraction * n_samples))
+        val_indices = indices[:val_size]
+        train_indices = indices[val_size:]
+
+        if train_indices.size == 0:
+            return X, y, None, None
+
+        return X[train_indices], y[train_indices], X[val_indices], y[val_indices]
+
+    def _capture_best_state(self):
+        """Capture the current network state."""
+        saved_layers = []
+        for layer in self.layers_:
+            saved_layers.append(copy.deepcopy(layer))
+        return saved_layers
 
     def fit(self, X, y):
         """
@@ -338,19 +396,51 @@ class MLPRegressor:
         self._input_size = X.shape[1]
         self._output_size = y.shape[1]
 
+        X_train, y_train, X_val, y_val = self._split_validation_data(X, y)
+
         self._build_network(self._input_size, self._output_size)
 
-        n_samples = X.shape[0]
-        normalizer = y.size
+        n_samples = X_train.shape[0]
+        normalizer = y_train.size
+
+        best_val_loss = np.inf
+        best_state = None
+        epochs_without_improvement = 0
+
+        self.loss_curve_ = []
+        self.validation_scores_ = []
 
         for _ in range(self.epochs):
-            predictions = self._forward(X)
-
-            grad_output = (2.0 / normalizer) * (predictions - y)
+            predictions = self._forward(X_train)
+            grad_output = (2.0 / max(1, normalizer)) * (predictions - y_train)
 
             self._backward(grad_output)
             self._apply_regularization(n_samples)
+            self._clip_gradients()
             self._update()
+
+            train_pred = self._forward(X_train)
+            train_loss = self._compute_loss(y_train, train_pred)
+            self.loss_curve_.append(train_loss)
+
+            if X_val is not None:
+                val_pred = self._forward(X_val)
+                val_loss = self._compute_loss(y_val, val_pred)
+                self.validation_scores_.append(val_loss)
+
+                if val_loss + self.tol < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state = self._capture_best_state()
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+
+                if self.early_stopping and epochs_without_improvement >= self.patience:
+                    if best_state is not None:
+                        self.layers_ = best_state
+                        self.layers = self.layers_
+                        self.network = self.layers_
+                    break
 
         return self
 
