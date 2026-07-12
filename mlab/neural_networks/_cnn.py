@@ -17,7 +17,6 @@ class ConvLayer:
         k_h, k_w = self.kernel_size
         scale = np.sqrt(2.0 / max(1, self.in_channels * k_h * k_w))
 
-        # Weight shape: (out_channels, in_channels, kH, kW)
         self.weight = np.random.randn(
             self.out_channels,
             self.in_channels,
@@ -30,7 +29,6 @@ class ConvLayer:
         self.grad_weight = np.zeros_like(self.weight)
         self.grad_bias = np.zeros_like(self.bias)
 
-        self._input = None
         self._input_padded = None
         self._patches = None
 
@@ -38,22 +36,18 @@ class ConvLayer:
         """Vectorized patch extraction using sliding_window_view."""
         k_h, k_w = self.kernel_size
         
-        # Windows shape: (batch_size, out_h, out_w, channels, k_h, k_w)
         windows = np.lib.stride_tricks.sliding_window_view(
             X_padded,
             window_shape=(k_h, k_w),
             axis=(1, 2)
         )
         
-        # Apply stride: slice the out_h and out_w dimensions
         return windows[:, ::self.stride, ::self.stride, :, :, :]
 
     def __call__(self, X):
         """Forward pass."""
         X = np.asarray(X, dtype=np.float64)
-        self._input = X
 
-        # Apply padding on H and W axes (axis 1 and 2)
         self._input_padded = np.pad(
             X,
             ((0, 0), (self.padding, self.padding), (self.padding, self.padding), (0, 0)),
@@ -61,13 +55,8 @@ class ConvLayer:
             constant_values=0.0
         )
 
-        # Extract patches
         self._patches = self._extract_patches(self._input_padded)
 
-        # Einsum optimization:
-        # patches shape: (N, H, W, C_in, Kh, Kw) -> n h w c k l
-        # weights shape: (C_out, C_in, Kh, Kw)   -> o c k l
-        # Output shape:  (N, H, W, C_out)        -> n h w o
         output = np.einsum(
             "nhwckl,ockl->nhwo",
             self._patches,
@@ -79,38 +68,31 @@ class ConvLayer:
         return np.clip(output, -1e12, 1e12)
 
     def backward(self, grad_output):
-        """Compute gradients using vectorization."""
+        """Compute gradients using fully vectorized operations."""
         grad_output = np.asarray(grad_output, dtype=np.float64)
         grad_output = np.clip(grad_output, -1e6, 1e6)
 
-        batch_size, out_height, out_width, _ = grad_output.shape
-        k_h, k_w = self.kernel_size
+        batch_size = max(1, grad_output.shape[0])
 
-        # Vectorized weight gradient
-        # grad_output shape: (N, H, W, C_out)      -> n h w o
-        # patches shape:     (N, H, W, C_in, K, K) -> n h w c k l
-        # weight grad shape: (C_out, C_in, K, K)   -> o c k l
         self.grad_weight = np.einsum(
             "nhwo,nhwckl->ockl",
             grad_output,
             self._patches,
             optimize=True
-        ) / max(1, batch_size)
+        ) / batch_size
 
-        self.grad_bias = np.sum(grad_output, axis=(0, 1, 2)) / max(1, batch_size)
+        self.grad_bias = np.sum(grad_output, axis=(0, 1, 2)) / batch_size
 
-        # Input gradient accumulation
         grad_input_padded = np.zeros_like(self._input_padded)
+        
+        k_h, k_w = self.kernel_size
+        out_height, out_width = grad_output.shape[1:3]
 
-        # Fast nested accumulation using einsum for input gradient
         for row in range(out_height):
             r_start = row * self.stride
             for col in range(out_width):
                 c_start = col * self.stride
                 
-                # grad_output_pos: (N, C_out) -> n o
-                # weight: (C_out, C_in, Kh, Kw) -> o c k l
-                # grad_patch: (N, C_in, Kh, Kw) -> n c k l
                 grad_patch = np.einsum(
                     "no,ockl->nckl",
                     grad_output[:, row, col, :],
@@ -118,7 +100,6 @@ class ConvLayer:
                     optimize=True
                 )
                 
-                # Transpose to (N, Kh, Kw, C_in) and accumulate
                 grad_patch = np.transpose(grad_patch, (0, 2, 3, 1))
                 
                 grad_input_padded[
@@ -149,57 +130,58 @@ class PoolingLayer:
     def __init__(self, pool_size=2, stride=2):
         self.pool_size = int(pool_size)
         self.stride = int(stride)
-        self._input = None
-        self._max_indices = None
+        self._input_shape = None
+        self._r_idx = None
+        self._c_idx = None
 
     def __call__(self, X):
+        """Fully vectorized max pooling forward pass."""
         X = np.asarray(X, dtype=np.float64)
-        self._input = X
+        self._input_shape = X.shape
 
-        batch_size, height, width, channels = X.shape
+        batch_size, out_height, out_width, channels = (
+            X.shape[0],
+            (X.shape[1] - self.pool_size) // self.stride + 1,
+            (X.shape[2] - self.pool_size) // self.stride + 1,
+            X.shape[3]
+        )
 
-        out_height = (height - self.pool_size) // self.stride + 1
-        out_width = (width - self.pool_size) // self.stride + 1
+        windows = np.lib.stride_tricks.sliding_window_view(
+            X,
+            window_shape=(self.pool_size, self.pool_size),
+            axis=(1, 2)
+        )
+        
+        patches = windows[:, ::self.stride, ::self.stride, :, :, :]
+        
+        output = np.max(patches, axis=(4, 5))
+        
+        patches_flat = patches.reshape(batch_size, out_height, out_width, channels, -1)
+        max_idx = np.argmax(patches_flat, axis=-1)
 
-        output = np.zeros((batch_size, out_height, out_width, channels), dtype=np.float64)
-        self._max_indices = np.zeros((batch_size, out_height, out_width, channels, 2), dtype=np.int64)
+        r_offset = max_idx // self.pool_size
+        c_offset = max_idx % self.pool_size
 
-        for row in range(out_height):
-            row_start = row * self.stride
-            row_end = row_start + self.pool_size
-
-            for col in range(out_width):
-                col_start = col * self.stride
-                col_end = col_start + self.pool_size
-
-                region = X[:, row_start:row_end, col_start:col_end, :]
-
-                # Vectorized block-wise max operation
-                for c in range(channels):
-                    values = region[:, :, :, c]
-                    flat_indices = np.argmax(values.reshape(batch_size, -1), axis=1)
-
-                    r_off = flat_indices // self.pool_size
-                    c_off = flat_indices % self.pool_size
-
-                    output[:, row, col, c] = values[np.arange(batch_size), r_off, c_off]
-                    self._max_indices[:, row, col, c, 0] = row_start + r_off
-                    self._max_indices[:, row, col, c, 1] = col_start + c_off
+        self._r_idx = (np.arange(out_height) * self.stride)[None, :, None, None] + r_offset
+        self._c_idx = (np.arange(out_width) * self.stride)[None, None, :, None] + c_offset
 
         return output
 
     def backward(self, grad_output):
+        """Fully vectorized max pooling backward pass."""
         grad_output = np.asarray(grad_output, dtype=np.float64)
-        grad_input = np.zeros_like(self._input)
-        batch_size, out_height, out_width, channels = grad_output.shape
+        grad_input = np.zeros(self._input_shape, dtype=np.float64)
 
-        for row in range(out_height):
-            for col in range(out_width):
-                for c in range(channels):
-                    max_r = self._max_indices[:, row, col, c, 0]
-                    max_c = self._max_indices[:, row, col, c, 1]
+        batch_size, _, _, channels = grad_output.shape
 
-                    grad_input[np.arange(batch_size), max_r, max_c, c] += grad_output[:, row, col, c]
+        batch_idx = np.arange(batch_size)[:, None, None, None]
+        ch_idx = np.arange(channels)[None, None, None, :]
+
+        np.add.at(
+            grad_input,
+            (batch_idx, self._r_idx, self._c_idx, ch_idx),
+            grad_output
+        )
 
         return grad_input
 
@@ -286,7 +268,6 @@ class CNNClassifier:
     def _build_network(self):
         height, width, channels = self.input_shape
 
-        # Adaptive sizes to prevent crash on single pixel testing
         kernel_size = 3 if min(height, width) >= 3 else 1
         padding = 1 if kernel_size == 3 else 0
         pool_size = 2 if min(height, width) >= 2 else 1
@@ -327,7 +308,6 @@ class CNNClassifier:
         self._rng = np.random.default_rng(self.random_state)
         np.random.seed(self.random_state)
 
-        # Normalize features safely
         X_mean = np.mean(X)
         X_std = np.std(X)
         if X_std < 1e-12: X_std = 1.0
@@ -361,7 +341,6 @@ class CNNClassifier:
                 grad = self.relu.backward(grad)
                 self.conv.backward(grad)
 
-                # Gradient clipping
                 self.conv.grad_weight = np.clip(self.conv.grad_weight, -5.0, 5.0)
                 self.linear.grad_weight = np.clip(self.linear.grad_weight, -5.0, 5.0)
 
