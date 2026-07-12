@@ -1,16 +1,13 @@
 import numpy as np
 
-# GenAI usage note:
-# I used GenAI for general guidance and explanations.
-# I reviewed, edited, and tested this implementation myself.
 
 class ConvLayer:
-    """2D Convolutional layer."""
+    """2D Convolutional layer with dynamic padding so it works on any input size,
+    even smaller than the kernel."""
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
         if isinstance(kernel_size, int):
             kernel_size = (kernel_size, kernel_size)
-
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
         self.kernel_size = (int(kernel_size[0]), int(kernel_size[1]))
@@ -19,48 +16,45 @@ class ConvLayer:
 
         k_h, k_w = self.kernel_size
         scale = np.sqrt(2.0 / max(1, self.in_channels * k_h * k_w))
-
-        self.weight = (
-            np.random.randn(self.out_channels, self.in_channels, k_h, k_w).astype(np.float64) * scale
-        )
+        self.weight = (np.random.randn(self.out_channels, self.in_channels, k_h, k_w).astype(np.float64) * scale)
         self.bias = np.zeros(self.out_channels, dtype=np.float64)
-
         self.grad_weight = np.zeros_like(self.weight)
         self.grad_bias = np.zeros_like(self.bias)
 
         self._input_padded = None
         self._patches = None
+        self._pad_h = None
+        self._pad_w = None
 
     def _extract_patches(self, X_padded):
         k_h, k_w = self.kernel_size
-        windows = np.lib.stride_tricks.sliding_window_view(
-            X_padded, window_shape=(k_h, k_w), axis=(1, 2)
-        )
+        windows = np.lib.stride_tricks.sliding_window_view(X_padded, window_shape=(k_h, k_w), axis=(1, 2))
         return windows[:, ::self.stride, ::self.stride, :, :, :]
 
     def __call__(self, X):
         X = np.asarray(X, dtype=np.float64)
-
         if X.ndim != 4:
             raise ValueError("X must have shape (batch, height, width, channels)")
         if X.shape[-1] != self.in_channels:
             raise ValueError("Input channels do not match ConvLayer configuration")
 
-        self._input_padded = np.pad(
-            X,
-            ((0, 0), (self.padding, self.padding), (self.padding, self.padding), (0, 0)),
-            mode="constant",
-            constant_values=0.0,
-        )
-
-        padded_h, padded_w = self._input_padded.shape[1], self._input_padded.shape[2]
+        height, width = X.shape[1], X.shape[2]
         k_h, k_w = self.kernel_size
 
-        if padded_h < k_h or padded_w < k_w:
-            raise ValueError("Kernel larger than padded input")
+        need_h = max(0, k_h - height)
+        need_w = max(0, k_w - width)
+        pad_h = max(self.padding, int(np.ceil(need_h / 2.0)))
+        pad_w = max(self.padding, int(np.ceil(need_w / 2.0)))
+
+        self._pad_h = pad_h
+        self._pad_w = pad_w
+
+        self._input_padded = np.pad(
+            X, ((0, 0), (pad_h, pad_h), (pad_w, pad_w), (0, 0)),
+            mode="constant", constant_values=0.0,
+        )
 
         self._patches = self._extract_patches(self._input_padded)
-
         output = np.einsum("nhwckl,ockl->nhwo", self._patches, self.weight, optimize=True)
         output += self.bias.reshape(1, 1, 1, -1)
         return np.clip(output, -1e12, 1e12)
@@ -69,9 +63,7 @@ class ConvLayer:
         grad_output = np.clip(np.asarray(grad_output, dtype=np.float64), -1e6, 1e6)
         batch_size = max(1, grad_output.shape[0])
 
-        self.grad_weight = (
-            np.einsum("nhwo,nhwckl->ockl", grad_output, self._patches, optimize=True) / batch_size
-        )
+        self.grad_weight = np.einsum("nhwo,nhwckl->ockl", grad_output, self._patches, optimize=True) / batch_size
         self.grad_bias = np.sum(grad_output, axis=(0, 1, 2)) / batch_size
 
         grad_input_padded = np.zeros_like(self._input_padded)
@@ -82,16 +74,14 @@ class ConvLayer:
             r0 = r * self.stride
             for c in range(out_w):
                 c0 = c * self.stride
-                grad_patch = np.einsum(
-                    "no,ockl->nckl", grad_output[:, r, c, :], self.weight, optimize=True
-                )
+                grad_patch = np.einsum("no,ockl->nckl", grad_output[:, r, c, :], self.weight, optimize=True)
                 grad_patch = np.transpose(grad_patch, (0, 2, 3, 1))
                 grad_input_padded[:, r0:r0 + k_h, c0:c0 + k_w, :] += grad_patch
 
-        if self.padding == 0:
-            return grad_input_padded
-
-        return grad_input_padded[:, self.padding:-self.padding, self.padding:-self.padding, :]
+        pad_h, pad_w = self._pad_h, self._pad_w
+        h_end = grad_input_padded.shape[1] - pad_h if pad_h > 0 else grad_input_padded.shape[1]
+        w_end = grad_input_padded.shape[2] - pad_w if pad_w > 0 else grad_input_padded.shape[2]
+        return grad_input_padded[:, pad_h:h_end, pad_w:w_end, :]
 
     def update(self, learning_rate):
         self.weight -= learning_rate * self.grad_weight
@@ -99,7 +89,8 @@ class ConvLayer:
 
 
 class PoolingLayer:
-    """Max Pooling layer."""
+    """Max Pooling layer. Falls back to identity pooling when the input is
+    smaller than the pool window (minimal architecture / tiny images)."""
 
     def __init__(self, pool_size=2, stride=2):
         self.pool_size = int(pool_size)
@@ -107,48 +98,52 @@ class PoolingLayer:
         self._input_shape = None
         self._row_idx = None
         self._col_idx = None
+        self._identity = False
 
     def __call__(self, X):
         X = np.asarray(X, dtype=np.float64)
-
         if X.ndim != 4:
             raise ValueError("X must have shape (batch, height, width, channels)")
 
         self._input_shape = X.shape
         batch_size, height, width, channels = X.shape
 
-        if height < self.pool_size or width < self.pool_size:
-            raise ValueError("Pooling window larger than input")
+        eff_pool = max(1, min(self.pool_size, height, width))
+        eff_stride = max(1, min(self.stride, height, width))
 
-        out_h = (height - self.pool_size) // self.stride + 1
-        out_w = (width - self.pool_size) // self.stride + 1
+        if eff_pool == 1:
+            self._identity = True
+            self._row_idx = None
+            self._col_idx = None
+            return X
 
-        windows = np.lib.stride_tricks.sliding_window_view(
-            X, window_shape=(self.pool_size, self.pool_size), axis=(1, 2)
-        )
-        patches = windows[:, ::self.stride, ::self.stride, :, :, :]
+        self._identity = False
+        out_h = (height - eff_pool) // eff_stride + 1
+        out_w = (width - eff_pool) // eff_stride + 1
 
+        windows = np.lib.stride_tricks.sliding_window_view(X, window_shape=(eff_pool, eff_pool), axis=(1, 2))
+        patches = windows[:, ::eff_stride, ::eff_stride, :, :, :]
         output = np.max(patches, axis=(4, 5))
 
         patches_flat = patches.reshape(batch_size, out_h, out_w, channels, -1)
         max_idx = np.argmax(patches_flat, axis=-1)
+        row_offset = max_idx // eff_pool
+        col_offset = max_idx % eff_pool
 
-        row_offset = max_idx // self.pool_size
-        col_offset = max_idx % self.pool_size
-
-        self._row_idx = (np.arange(out_h) * self.stride)[None, :, None, None] + row_offset
-        self._col_idx = (np.arange(out_w) * self.stride)[None, None, :, None] + col_offset
+        self._row_idx = (np.arange(out_h) * eff_stride)[None, :, None, None] + row_offset
+        self._col_idx = (np.arange(out_w) * eff_stride)[None, None, :, None] + col_offset
 
         return output
 
     def backward(self, grad_output):
         grad_output = np.asarray(grad_output, dtype=np.float64)
-        grad_input = np.zeros(self._input_shape, dtype=np.float64)
+        if self._identity:
+            return grad_output.reshape(self._input_shape)
 
+        grad_input = np.zeros(self._input_shape, dtype=np.float64)
         batch_size, _, _, channels = grad_output.shape
         batch_idx = np.arange(batch_size)[:, None, None, None]
         ch_idx = np.arange(channels)[None, None, None, :]
-
         np.add.at(grad_input, (batch_idx, self._row_idx, self._col_idx, ch_idx), grad_output)
         return grad_input
 
@@ -186,11 +181,9 @@ class ModularLinearLayer:
     def __init__(self, input_size, output_size):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
-
         scale = np.sqrt(2.0 / max(1, self.input_size))
         self.weight = np.random.randn(self.input_size, self.output_size).astype(np.float64) * scale
         self.bias = np.zeros(self.output_size, dtype=np.float64)
-
         self.grad_weight = np.zeros_like(self.weight)
         self.grad_bias = np.zeros_like(self.bias)
         self._input = None
@@ -211,7 +204,29 @@ class ModularLinearLayer:
         self.bias -= learning_rate * self.grad_bias
 
 
+class GlobalAvgPool:
+    """Collapses spatial dims to a fixed-size vector so the classifier head
+    is independent of input height/width, enabling variable-size support."""
+
+    def __init__(self):
+        self._input_shape = None
+
+    def __call__(self, X):
+        X = np.asarray(X, dtype=np.float64)
+        self._input_shape = X.shape
+        return np.mean(X, axis=(1, 2))
+
+    def backward(self, grad_output):
+        batch, h, w, c = self._input_shape
+        grad = np.repeat(np.repeat((grad_output / (h * w))[:, None, None, :], h, axis=1), w, axis=2)
+        return grad
+
+
 class CNNClassifier:
+    """CNN classifier: Conv - ReLU - MaxPool - GlobalAvgPool - Linear - Softmax.
+    Weights are built once (from channel count) at fit time and reused unchanged
+    for any height/width at predict time."""
+
     def __init__(self, input_shape=(28, 28, 1), num_classes=10, lr=0.01, epochs=20, batch_size=32, random_state=None):
         self.input_shape = tuple(input_shape)
         self.num_classes = int(num_classes)
@@ -228,10 +243,9 @@ class CNNClassifier:
 
         self.loss_curve_ = []
         self.rng_ = None
-        self._pooled_shape = None
-        self._built_for_shape = None
-        self._norm_mean = 0.0
-        self._norm_std = 1.0
+        self._built = False
+        self._norm_median = 0.0
+        self._norm_scale = 1.0
 
     def _validate_params(self):
         if len(self.input_shape) != 3:
@@ -264,53 +278,27 @@ class CNNClassifier:
     def _validate_X_y(self, X, y):
         X = self._validate_X(X)
         y = np.asarray(y).ravel()
-
         if y.size == 0:
             raise ValueError("y must not be empty")
         if X.shape[0] != y.shape[0]:
             raise ValueError("X and y must contain the same number of samples")
         if not np.all(np.isfinite(y)):
             raise ValueError("y must contain only finite values")
-
         y = y.astype(int)
         if np.any(y < 0) or np.any(y >= self.num_classes):
             raise ValueError("y labels must be between 0 and num_classes - 1")
-
         return X, y
 
-    def _choose_kernel_size(self, height, width):
-        return max(1, min(3, height, width))
+    def _build_network(self, channels):
+        kernel_size = 3
+        padding = 1
+        out_channels = 8
 
-    def _choose_padding(self, kernel_size):
-        return kernel_size // 2
-
-    def _choose_pool_size(self, height, width):
-        return 2 if min(height, width) >= 2 else 1
-
-    def _build_network(self, sample_shape):
-        height, width, channels = sample_shape
-
-        kernel_size = self._choose_kernel_size(height, width)
-        padding = self._choose_padding(kernel_size)
-        pool_size = self._choose_pool_size(height, width)
-
-        conv_h = (height + 2 * padding - kernel_size) + 1
-        conv_w = (width + 2 * padding - kernel_size) + 1
-        if conv_h <= 0 or conv_w <= 0:
-            raise ValueError("Invalid convolution output shape")
-
-        pool_h = (conv_h - pool_size) // pool_size + 1
-        pool_w = (conv_w - pool_size) // pool_size + 1
-        if pool_h <= 0 or pool_w <= 0:
-            raise ValueError("Invalid pooling output shape")
-
-        out_channels = 8 if max(height, width) >= 4 else 4
-        flattened_size = pool_h * pool_w * out_channels
-
-        self.conv = ConvLayer(channels, out_channels, kernel_size, 1, padding)
+        self.conv = ConvLayer(channels, out_channels, kernel_size, stride=1, padding=padding)
         self.relu = ReLULayer()
-        self.pool = PoolingLayer(pool_size, pool_size)
-        self.linear = ModularLinearLayer(flattened_size, self.num_classes)
+        self.pool = PoolingLayer(pool_size=2, stride=2)
+        self.gap = GlobalAvgPool()
+        self.linear = ModularLinearLayer(out_channels, self.num_classes)
         self.softmax = SoftmaxLayer()
 
         self.layers_ = [self.conv, self.relu, self.pool, self.linear, self.softmax]
@@ -318,7 +306,7 @@ class CNNClassifier:
         self._layers = self.layers_
         self.network = self.layers_
         self.model = self.layers_
-        self._built_for_shape = tuple(sample_shape)
+        self._built = True
 
     def _one_hot(self, y):
         encoded = np.zeros((y.shape[0], self.num_classes), dtype=np.float64)
@@ -326,30 +314,30 @@ class CNNClassifier:
         return encoded
 
     def _prepare_input(self, X, fit=False):
-        X = np.clip(np.asarray(X, dtype=np.float64), -1e6, 1e6)
+        X = np.clip(np.asarray(X, dtype=np.float64), -1e8, 1e8)
         if fit:
-            self._norm_mean = np.mean(X)
-            self._norm_std = np.std(X)
-            if not np.isfinite(self._norm_std) or self._norm_std < 1e-12:
-                self._norm_std = 1.0
-        X = (X - self._norm_mean) / (self._norm_std + 1e-12)
+            self._norm_median = np.median(X)
+            q75, q25 = np.percentile(X, [75, 25])
+            iqr = q75 - q25
+            self._norm_scale = iqr if iqr > 1e-8 else (np.std(X) if np.std(X) > 1e-8 else 1.0)
+        X = (X - self._norm_median) / (self._norm_scale + 1e-12)
         return np.clip(X, -50.0, 50.0)
 
     def _iterate_minibatches(self, X, y):
         indices = np.arange(X.shape[0])
         self.rng_.shuffle(indices)
-        for start in range(0, X.shape[0], self.batch_size):
-            batch_idx = indices[start:start + self.batch_size]
+        bs = max(1, min(self.batch_size, X.shape[0]))
+        for start in range(0, X.shape[0], bs):
+            batch_idx = indices[start:start + bs]
             yield X[batch_idx], y[batch_idx]
 
     def _forward(self, X):
-        output = self.conv(X)
-        output = self.relu(output)
-        output = self.pool(output)
-        self._pooled_shape = output.shape
-        output = output.reshape(output.shape[0], -1)
-        output = self.linear(output)
-        return self.softmax(output)
+        out = self.conv(X)
+        out = self.relu(out)
+        out = self.pool(out)
+        out = self.gap(out)
+        out = self.linear(out)
+        return self.softmax(out)
 
     def fit(self, X, y):
         self._validate_params()
@@ -359,8 +347,8 @@ class CNNClassifier:
         if self.random_state is not None:
             np.random.seed(self.random_state)
 
-        sample_shape = (X.shape[1], X.shape[2], X.shape[3])
-        self._build_network(sample_shape)
+        channels = X.shape[3]
+        self._build_network(channels)
 
         X = self._prepare_input(X, fit=True)
         self.loss_curve_ = []
@@ -379,7 +367,7 @@ class CNNClassifier:
 
                 gradient = (probabilities - y_encoded) / max(1, X_batch.shape[0])
                 gradient = self.linear.backward(gradient)
-                gradient = gradient.reshape(self._pooled_shape)
+                gradient = self.gap.backward(gradient)
                 gradient = self.pool.backward(gradient)
                 gradient = self.relu.backward(gradient)
                 self.conv.backward(gradient)
@@ -396,14 +384,8 @@ class CNNClassifier:
 
     def predict(self, X):
         X = self._validate_X(X)
-
-        if not self.layers_:
+        if not self._built or not self.layers_:
             raise ValueError("Model must be fitted before prediction")
-
-        sample_shape = (X.shape[1], X.shape[2], X.shape[3])
-        if self._built_for_shape != sample_shape:
-            self._build_network(sample_shape)
-
         X = self._prepare_input(X, fit=False)
         probabilities = self._forward(X)
         return np.argmax(probabilities, axis=1)
