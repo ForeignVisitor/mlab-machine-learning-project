@@ -1,36 +1,39 @@
-import numpy as np
-
 # GenAI usage note:
 # I used GenAI for general guidance and explanations.
 # I reviewed, edited, and tested this implementation myself.
 
+import numpy as np
+
 
 class KMeans:
-    """
-    Standard K-Means clustering algorithm.
-    """
+    """K-Means clustering with random centroid initialization."""
 
-    def __init__(self, n_clusters=3, max_iter=300, tol=1e-4, random_state=None):
+    def __init__(
+        self,
+        n_clusters=3,
+        max_iter=300,
+        tol=1e-4,
+        n_init=10,
+        random_state=None,
+    ):
         self.n_clusters = n_clusters
         self.max_iter = max_iter
         self.tol = tol
+        self.n_init = n_init
         self.random_state = random_state
         self.cluster_centers_ = None
         self.labels_ = None
         self.inertia_ = None
-        self._n_init = 10
 
     def _validate_params(self):
-        """Validate constructor parameters before fitting."""
-        if not isinstance(self.n_clusters, (int, np.integer)):
-            raise ValueError("n_clusters must be an integer")
-        if self.n_clusters <= 0:
+        if not isinstance(self.n_clusters, (int, np.integer)) or self.n_clusters <= 0:
             raise ValueError("n_clusters must be a positive integer")
 
-        if not isinstance(self.max_iter, (int, np.integer)):
-            raise ValueError("max_iter must be an integer")
-        if self.max_iter <= 0:
+        if not isinstance(self.max_iter, (int, np.integer)) or self.max_iter <= 0:
             raise ValueError("max_iter must be a positive integer")
+
+        if not isinstance(self.n_init, (int, np.integer)) or self.n_init <= 0:
+            raise ValueError("n_init must be a positive integer")
 
         if not isinstance(self.tol, (int, float, np.integer, np.floating)):
             raise ValueError("tol must be a number")
@@ -42,94 +45,73 @@ class KMeans:
         ):
             raise ValueError("random_state must be an integer or None")
 
-    def _validate_X(self, X):
-        """Validate input data before fitting or prediction."""
+    def _validate_X(self, X, fitting=False):
         X = np.asarray(X, dtype=float)
 
         if X.ndim != 2:
             raise ValueError("X must be a 2D array")
-        if X.size == 0:
-            raise ValueError("X must not be empty")
         if X.shape[0] == 0:
-            raise ValueError("X must contain at least one sample")
-        if X.shape[0] < self.n_clusters:
-            raise ValueError("n_clusters cannot be greater than number of samples")
+            raise ValueError("X must not be empty")
         if not np.all(np.isfinite(X)):
             raise ValueError("X must contain only finite values")
 
+        if fitting and X.shape[0] < self.n_clusters:
+            raise ValueError("n_clusters cannot be greater than number of samples")
+
         return X
 
-    def _compute_distances(self, X, centers):
-        """Compute squared Euclidean distances from each point to each center."""
-        return np.sum((X[:, np.newaxis, :] - centers[np.newaxis, :, :]) ** 2, axis=2)
+    @staticmethod
+    def _squared_distances(X, centers):
+        """Return squared distance from every point to every center."""
+        return np.sum((X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
 
     def _assign_labels(self, X, centers):
-        """Assign each sample to the nearest cluster center."""
-        distances = self._compute_distances(X, centers)
-        return np.argmin(distances, axis=1)
+        return np.argmin(self._squared_distances(X, centers), axis=1)
 
-    def _compute_inertia(self, X, centers, labels):
-        """Compute inertia as the sum of squared distances to assigned centers."""
+    @staticmethod
+    def _inertia(X, centers, labels):
         return float(np.sum((X - centers[labels]) ** 2))
 
     def _initialize_centroids(self, X, rng):
-        """Randomly choose initial centroids from the dataset."""
         indices = rng.choice(X.shape[0], size=self.n_clusters, replace=False)
         return X[indices].copy()
 
-    def _run_single_kmeans(self, X, initial_centers, rng):
-        """Run one K-Means optimization from given initial centers."""
-        centers = initial_centers.copy()
-
+    def _run_single_kmeans(self, X, centers, rng):
         for _ in range(self.max_iter):
             labels = self._assign_labels(X, centers)
             new_centers = centers.copy()
 
-            # Update every centroid using the mean of its assigned points.
-            for cluster_idx in range(self.n_clusters):
-                cluster_points = X[labels == cluster_idx]
+            for cluster_index in range(self.n_clusters):
+                cluster_points = X[labels == cluster_index]
 
                 if len(cluster_points) > 0:
-                    new_centers[cluster_idx] = np.mean(cluster_points, axis=0)
+                    new_centers[cluster_index] = cluster_points.mean(axis=0)
                 else:
-                    # Reinitialize empty clusters with a random data point.
-                    random_index = rng.integers(0, X.shape[0])
-                    new_centers[cluster_idx] = X[random_index]
+                    # Empty clusters are reset to an existing data point.
+                    new_centers[cluster_index] = X[rng.integers(X.shape[0])]
 
-            # Stop when centroid movement is below the tolerance.
-            center_shift = np.max(np.linalg.norm(new_centers - centers, axis=1))
+            shift = np.max(np.linalg.norm(new_centers - centers, axis=1))
             centers = new_centers
 
-            if center_shift <= self.tol:
+            if shift <= self.tol:
                 break
 
         labels = self._assign_labels(X, centers)
-        inertia = self._compute_inertia(X, centers, labels)
-
-        return centers, labels, inertia
+        return centers, labels, self._inertia(X, centers, labels)
 
     def fit(self, X):
-        """
-        Fit the K-Means model to the data.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            self
-        """
         self._validate_params()
-        X = self._validate_X(X)
+        X = self._validate_X(X, fitting=True)
         rng = np.random.default_rng(self.random_state)
 
         best_centers = None
         best_labels = None
         best_inertia = np.inf
 
-        # Run multiple initializations and keep the best solution.
-        for _ in range(self._n_init):
-            initial_centers = self._initialize_centroids(X, rng)
-            centers, labels, inertia = self._run_single_kmeans(X, initial_centers, rng)
+        # Different starting points reduce the chance of a poor local solution.
+        for _ in range(self.n_init):
+            centers = self._initialize_centroids(X, rng)
+            centers, labels, inertia = self._run_single_kmeans(X, centers, rng)
 
             if inertia < best_inertia:
                 best_centers = centers.copy()
@@ -139,29 +121,14 @@ class KMeans:
         self.cluster_centers_ = best_centers
         self.labels_ = best_labels
         self.inertia_ = float(best_inertia)
-
         return self
 
     def predict(self, X):
-        """
-        Predict cluster labels for new data points.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples,) with cluster labels
-        """
-        X = np.asarray(X, dtype=float)
-
-        if X.ndim != 2:
-            raise ValueError("X must be a 2D array")
-        if X.size == 0:
-            raise ValueError("X must not be empty")
-        if not np.all(np.isfinite(X)):
-            raise ValueError("X must contain only finite values")
         if self.cluster_centers_ is None:
             raise ValueError("Model must be fitted before prediction")
+
+        X = self._validate_X(X)
+
         if X.shape[1] != self.cluster_centers_.shape[1]:
             raise ValueError("X must have the same number of features as the fitted data")
 
@@ -169,33 +136,28 @@ class KMeans:
 
 
 class KMeansPlusPlus(KMeans):
-    """
-    K-Means clustering with K-Means++ initialization.
-    """
+    """K-Means clustering with K-Means++ centroid initialization."""
 
     def _initialize_centroids(self, X, rng):
-        """Initialize centroids using the K-Means++ strategy."""
         n_samples = X.shape[0]
-        centers = []
+        selected_indices = [rng.integers(n_samples)]
 
-        # Choose the first center uniformly at random.
-        first_idx = rng.integers(0, n_samples)
-        centers.append(X[first_idx].copy())
-
-        # Choose later centers with probability proportional to D(x)^2.
         for _ in range(1, self.n_clusters):
-            current_centers = np.array(centers, dtype=float)
-            distances = self._compute_distances(X, current_centers)
-            closest_dist_sq = np.min(distances, axis=1)
-
-            total_distance = np.sum(closest_dist_sq)
+            centers = X[selected_indices]
+            distances = self._squared_distances(X, centers)
+            closest_distance_sq = distances.min(axis=1)
+            total_distance = closest_distance_sq.sum()
 
             if total_distance == 0:
-                next_idx = rng.integers(0, n_samples)
+                available_indices = np.setdiff1d(
+                    np.arange(n_samples),
+                    selected_indices,
+                )
+                next_index = rng.choice(available_indices)
             else:
-                probabilities = closest_dist_sq / total_distance
-                next_idx = rng.choice(n_samples, p=probabilities)
+                probabilities = closest_distance_sq / total_distance
+                next_index = rng.choice(n_samples, p=probabilities)
 
-            centers.append(X[next_idx].copy())
+            selected_indices.append(next_index)
 
-        return np.array(centers, dtype=float)
+        return X[selected_indices].copy()

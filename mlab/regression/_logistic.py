@@ -1,17 +1,68 @@
-import numpy as np
-
 # GenAI usage note:
 # I used GenAI for general guidance and explanations.
 # I reviewed, edited, and tested this implementation myself.
 
+import numpy as np
+
+
+def _validate_training_data(X, y):
+    """Check training data for binary classification."""
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array")
+
+    if y.ndim == 2 and y.shape[1] == 1:
+        y = y.ravel()
+    elif y.ndim != 1:
+        raise ValueError("y must be a 1D array or a column vector")
+
+    if X.shape[0] == 0:
+        raise ValueError("X and y must not be empty")
+
+    if X.shape[0] != y.shape[0]:
+        raise ValueError("X and y must have the same number of samples")
+
+    if not np.all(np.isin(y, [0, 1])):
+        raise ValueError("y must contain only binary labels 0 or 1")
+
+    return X, y
+
+
+def _validate_prediction_data(X, n_features):
+    """Check new samples before prediction."""
+    X = np.asarray(X, dtype=float)
+
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array")
+
+    if X.shape[0] == 0:
+        raise ValueError("X must not be empty")
+
+    if X.shape[1] != n_features:
+        raise ValueError("X has a different number of features than the training data")
+
+    return X
+
+
+def _sigmoid(values):
+    """Convert scores into probabilities between 0 and 1."""
+    values = np.clip(values, -500, 500)
+    return 1 / (1 + np.exp(-values))
+
 
 class LogisticRegression:
-    """
-    Logistic regression classifier for binary classification.
-    Uses batch gradient descent to learn weights and bias.
-    """
+    """Binary logistic regression trained with batch gradient descent."""
 
     def __init__(self, learning_rate=0.01, n_iterations=1000, reg_strength=0.01):
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if n_iterations <= 0:
+            raise ValueError("n_iterations must be positive")
+        if reg_strength < 0:
+            raise ValueError("reg_strength must not be negative")
+
         self.learning_rate = learning_rate
         self.n_iterations = n_iterations
         self.reg_strength = reg_strength
@@ -19,272 +70,149 @@ class LogisticRegression:
         self.bias_ = None
         self.single_class_ = None
 
-    def _sigmoid(self, z):
-        """Apply the sigmoid function element-wise."""
-        z = np.clip(z, -500, 500)
-        return 1 / (1 + np.exp(-z))
-
     def fit(self, X, y):
-        """
-        Train the logistic regression model.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-            y: numpy array of shape (n_samples,) with binary labels 0 or 1
-        """
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float)
-
-        # Validate input shapes and basic assumptions.
-        if X.ndim != 2:
-            raise ValueError("X must be a 2D array")
-        if y.ndim != 1:
-            y = y.ravel()
-
-        if X.size == 0 or y.size == 0:
-            raise ValueError("X and y must not be empty")
-        if X.shape[0] == 0:
-            raise ValueError("X must contain at least one sample")
-        if X.shape[0] != y.shape[0]:
-            raise ValueError("X and y must have the same number of samples")
-        if not np.all(np.isin(y, [0, 1])):
-            raise ValueError("y must contain only binary labels 0 or 1")
-
+        X, y = _validate_training_data(X, y)
         n_samples, n_features = X.shape
-        self.weights_ = np.zeros(n_features, dtype=float)
+
+        self.weights_ = np.zeros(n_features)
         self.bias_ = 0.0
-        self.single_class_ = None
+        classes = np.unique(y)
 
-        unique_classes = np.unique(y)
-
-        # If the dataset has only one class, memorize it and skip normal training.
-        if unique_classes.size == 1:
-            self.single_class_ = int(unique_classes[0])
+        # A classifier can only return the observed label in this case.
+        if len(classes) == 1:
+            self.single_class_ = int(classes[0])
             return self
 
-        # Compute class weights to reduce the effect of class imbalance.
-        count_0 = np.sum(y == 0)
-        count_1 = np.sum(y == 1)
+        self.single_class_ = None
+        sample_weights = self._class_weights(y)
 
-        weight_0 = n_samples / (2.0 * count_0)
-        weight_1 = n_samples / (2.0 * count_1)
-        sample_weights = np.where(y == 0, weight_0, weight_1)
-
-        # Run batch gradient descent for the requested number of iterations.
         for _ in range(self.n_iterations):
-            linear_output = X @ self.weights_ + self.bias_
-            predictions = self._sigmoid(linear_output)
+            probabilities = _sigmoid(X @ self.weights_ + self.bias_)
+            errors = (probabilities - y) * sample_weights
 
-            # Use weighted errors so minority-class samples matter more.
-            errors = (predictions - y) * sample_weights
+            gradient_weights = (
+                X.T @ errors / n_samples
+                + self.reg_strength * self.weights_ / n_samples
+            )
+            gradient_bias = errors.mean()
 
-            # Add L2 regularization to the weight gradient, but not to the bias.
-            grad_w = (1.0 / n_samples) * (X.T @ errors) + (self.reg_strength / n_samples) * self.weights_
-            grad_b = (1.0 / n_samples) * np.sum(errors)
-
-            self.weights_ -= self.learning_rate * grad_w
-            self.bias_ -= self.learning_rate * grad_b
+            self.weights_ -= self.learning_rate * gradient_weights
+            self.bias_ -= self.learning_rate * gradient_bias
 
         return self
 
+    @staticmethod
+    def _class_weights(y):
+        """Give both classes the same total influence during training."""
+        n_samples = len(y)
+        count_0 = np.sum(y == 0)
+        count_1 = np.sum(y == 1)
+
+        weight_0 = n_samples / (2 * count_0)
+        weight_1 = n_samples / (2 * count_1)
+        return np.where(y == 0, weight_0, weight_1)
+
     def predict_proba(self, X):
-        """
-        Predict class probabilities for the input samples.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples, 2)
-        """
-        X = np.asarray(X, dtype=float)
-
-        # Prediction requires a fitted model and valid input data.
-        if X.ndim != 2:
-            raise ValueError("X must be a 2D array")
-        if X.size == 0:
-            raise ValueError("X must not be empty")
-        if self.weights_ is None or self.bias_ is None:
+        if self.weights_ is None:
             raise ValueError("Model must be fitted before prediction")
 
-        # For one-class training data, always return that memorized class.
+        X = _validate_prediction_data(X, len(self.weights_))
+
         if self.single_class_ is not None:
-            if self.single_class_ == 0:
-                return np.column_stack((np.ones(X.shape[0]), np.zeros(X.shape[0])))
-            return np.column_stack((np.zeros(X.shape[0]), np.ones(X.shape[0])))
+            probabilities = np.zeros((X.shape[0], 2))
+            probabilities[:, self.single_class_] = 1.0
+            return probabilities
 
-        probabilities_class_1 = self._sigmoid(X @ self.weights_ + self.bias_)
-        probabilities_class_0 = 1 - probabilities_class_1
-
-        return np.column_stack((probabilities_class_0, probabilities_class_1))
+        probability_class_1 = _sigmoid(X @ self.weights_ + self.bias_)
+        return np.column_stack((1 - probability_class_1, probability_class_1))
 
     def predict(self, X):
-        """
-        Predict binary class labels for the input samples.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples,) with labels 0 or 1
-        """
-        # Return the memorized class directly for one-class training data.
-        if self.single_class_ is not None:
-            X = np.asarray(X, dtype=float)
-            if X.ndim != 2:
-                raise ValueError("X must be a 2D array")
-            if X.size == 0:
-                raise ValueError("X must not be empty")
-            return np.full(X.shape[0], self.single_class_, dtype=int)
-
-        # Convert class-1 probabilities into hard labels with threshold 0.5.
-        probabilities = self.predict_proba(X)[:, 1]
-        return (probabilities >= 0.5).astype(int)
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
 class SGDClassifier:
-    """
-    Logistic regression classifier trained with stochastic gradient descent.
-    Uses mini-batches during training.
-    """
+    """Binary logistic regression trained with mini-batch gradient descent."""
 
-    def __init__(self, learning_rate=0.01, n_iterations=1000, batch_size=32, reg_strength=0.01):
+    def __init__(
+        self,
+        learning_rate=0.01,
+        n_iterations=1000,
+        batch_size=32,
+        reg_strength=0.01,
+        random_state=None,
+    ):
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if n_iterations <= 0:
+            raise ValueError("n_iterations must be positive")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if reg_strength < 0:
+            raise ValueError("reg_strength must not be negative")
+
         self.learning_rate = learning_rate
         self.n_iterations = n_iterations
         self.batch_size = batch_size
         self.reg_strength = reg_strength
+        self.random_state = random_state
         self.weights_ = None
         self.bias_ = None
         self.single_class_ = None
 
-    def _sigmoid(self, z):
-        """Apply the sigmoid function element-wise."""
-        z = np.clip(z, -500, 500)
-        return 1 / (1 + np.exp(-z))
-
     def fit(self, X, y):
-        """
-        Train the classifier using stochastic gradient descent.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-            y: numpy array of shape (n_samples,) with binary labels 0 or 1
-        """
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float)
-
-        # Validate input before training.
-        if X.ndim != 2:
-            raise ValueError("X must be a 2D array")
-        if y.ndim != 1:
-            y = y.ravel()
-
-        if X.size == 0 or y.size == 0:
-            raise ValueError("X and y must not be empty")
-        if X.shape[0] == 0:
-            raise ValueError("X must contain at least one sample")
-        if X.shape[0] != y.shape[0]:
-            raise ValueError("X and y must have the same number of samples")
-        if not np.all(np.isin(y, [0, 1])):
-            raise ValueError("y must contain only binary labels 0 or 1")
-
+        X, y = _validate_training_data(X, y)
         n_samples, n_features = X.shape
-        self.weights_ = np.zeros(n_features, dtype=float)
+
+        self.weights_ = np.zeros(n_features)
         self.bias_ = 0.0
-        self.single_class_ = None
+        classes = np.unique(y)
 
-        unique_classes = np.unique(y)
-
-        # If the dataset has only one class, memorize it and skip normal training.
-        if unique_classes.size == 1:
-            self.single_class_ = int(unique_classes[0])
+        if len(classes) == 1:
+            self.single_class_ = int(classes[0])
             return self
 
-        # Compute dataset-level class weights once before SGD.
-        count_0 = np.sum(y == 0)
-        count_1 = np.sum(y == 1)
+        self.single_class_ = None
+        sample_weights = LogisticRegression._class_weights(y)
+        rng = np.random.default_rng(self.random_state)
 
-        weight_0 = n_samples / (2.0 * count_0)
-        weight_1 = n_samples / (2.0 * count_1)
-
-        # Shuffle the data every epoch and update with mini-batches.
         for _ in range(self.n_iterations):
-            order = np.random.permutation(n_samples)
-            X_epoch = X[order]
-            y_epoch = y[order]
+            indices = rng.permutation(n_samples)
+            X_shuffled = X[indices]
+            y_shuffled = y[indices]
+            weights_shuffled = sample_weights[indices]
 
             for start in range(0, n_samples, self.batch_size):
-                stop = start + self.batch_size
-                X_batch = X_epoch[start:stop]
-                y_batch = y_epoch[start:stop]
+                X_batch = X_shuffled[start:start + self.batch_size]
+                y_batch = y_shuffled[start:start + self.batch_size]
+                weight_batch = weights_shuffled[start:start + self.batch_size]
 
-                batch_weights = np.where(y_batch == 0, weight_0, weight_1)
+                probabilities = _sigmoid(X_batch @ self.weights_ + self.bias_)
+                errors = (probabilities - y_batch) * weight_batch
 
-                linear_output = X_batch @ self.weights_ + self.bias_
-                predictions = self._sigmoid(linear_output)
+                gradient_weights = (
+                    X_batch.T @ errors / len(X_batch)
+                    + self.reg_strength * self.weights_ / n_samples
+                )
+                gradient_bias = errors.mean()
 
-                # Compute weighted gradients for the current mini-batch.
-                errors = (predictions - y_batch) * batch_weights
-
-                # Add L2 regularization to the weight gradient, but not to the bias.
-                grad_w = (1.0 / len(X_batch)) * (X_batch.T @ errors) + (self.reg_strength / n_samples) * self.weights_
-                grad_b = (1.0 / len(X_batch)) * np.sum(errors)
-
-                self.weights_ -= self.learning_rate * grad_w
-                self.bias_ -= self.learning_rate * grad_b
+                self.weights_ -= self.learning_rate * gradient_weights
+                self.bias_ -= self.learning_rate * gradient_bias
 
         return self
 
     def predict_proba(self, X):
-        """
-        Predict class probabilities for the input samples.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples, 2)
-        """
-        X = np.asarray(X, dtype=float)
-
-        # Prediction is only valid after the model has been trained.
-        if X.ndim != 2:
-            raise ValueError("X must be a 2D array")
-        if X.size == 0:
-            raise ValueError("X must not be empty")
-        if self.weights_ is None or self.bias_ is None:
+        if self.weights_ is None:
             raise ValueError("Model must be fitted before prediction")
 
-        # For one-class training data, always return that memorized class.
+        X = _validate_prediction_data(X, len(self.weights_))
+
         if self.single_class_ is not None:
-            if self.single_class_ == 0:
-                return np.column_stack((np.ones(X.shape[0]), np.zeros(X.shape[0])))
-            return np.column_stack((np.zeros(X.shape[0]), np.ones(X.shape[0])))
+            probabilities = np.zeros((X.shape[0], 2))
+            probabilities[:, self.single_class_] = 1.0
+            return probabilities
 
-        probabilities_class_1 = self._sigmoid(X @ self.weights_ + self.bias_)
-        probabilities_class_0 = 1 - probabilities_class_1
-
-        return np.column_stack((probabilities_class_0, probabilities_class_1))
+        probability_class_1 = _sigmoid(X @ self.weights_ + self.bias_)
+        return np.column_stack((1 - probability_class_1, probability_class_1))
 
     def predict(self, X):
-        """
-        Predict binary class labels for the input samples.
-
-        Args:
-            X: numpy array of shape (n_samples, n_features)
-
-        Returns:
-            numpy array of shape (n_samples,) with labels 0 or 1
-        """
-        # Return the memorized class directly for one-class training data.
-        if self.single_class_ is not None:
-            X = np.asarray(X, dtype=float)
-            if X.ndim != 2:
-                raise ValueError("X must be a 2D array")
-            if X.size == 0:
-                raise ValueError("X must not be empty")
-            return np.full(X.shape[0], self.single_class_, dtype=int)
-
-        # Class 1 is predicted when the probability is at least 0.5.
-        probabilities = self.predict_proba(X)[:, 1]
-        return (probabilities >= 0.5).astype(int)
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
