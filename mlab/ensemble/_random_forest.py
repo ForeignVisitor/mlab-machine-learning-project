@@ -1,7 +1,3 @@
-# GenAI usage note:
-# I used GenAI for general guidance and explanations.
-# I reviewed, edited, and tested this implementation myself.
-
 import numpy as np
 
 from mlab.trees._decision_tree import DecisionTree

@@ -1,7 +1,3 @@
-# GenAI usage note:
-# I used GenAI for general guidance and explanations.
-# I reviewed, edited, and tested this implementation myself.
-
 import copy
 
 import numpy as np

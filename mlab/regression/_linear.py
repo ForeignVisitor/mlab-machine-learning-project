@@ -1,9 +1,5 @@
 import numpy as np
 
-# GenAI usage note:
-# I used GenAI for general guidance and explanations.
-# I reviewed, edited, and tested this implementation myself.
-
 def _validate_training_data(X, y):
     """Check that X and y can be used for supervised learning."""
     X = np.asarray(X, dtype=float)
