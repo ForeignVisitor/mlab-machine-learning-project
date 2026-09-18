@@ -1,5 +1,7 @@
 # Machine Learning Lab Library
 
+Souhail Karam — from-scratch implementation of core ML algorithms in NumPy, benchmarked against baselines on real datasets.
+
 A small machine-learning library implemented with NumPy for the Machine Learning Lab course.
 
 The core algorithms and evaluation methods are implemented manually. Third-party libraries may be used in the final project only for supporting tasks such as data loading, preprocessing, scaling, and visualisation.
